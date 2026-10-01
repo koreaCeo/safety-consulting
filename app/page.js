@@ -14,6 +14,10 @@ function guessRole(t) {
   return "staff";
 }
 
+function withTimeout(p, ms = 15000) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("응답 없음 (15초). 새로고침 후 다시 시도하세요.")), ms))]);
+}
+
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -37,7 +41,7 @@ export default function Page() {
   const [session, setSession] = useState(undefined);
   useEffect(() => {
     sb().auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = sb().auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: sub } = sb().auth.onAuthStateChange((_e, s) => { setTimeout(() => setSession(s), 0); });
     return () => sub.subscription.unsubscribe();
   }, []);
   if (session === undefined) return <div className="wrap"><div className="empty">불러오는 중…</div></div>;
@@ -294,18 +298,36 @@ function Scan() {
   );
 }
 
+function withTimeout(p, ms = 15000) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("서버 응답 없음(15초). 새로고침 후 다시 시도하세요.")), ms))]);
+}
+
 function List() {
   const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
   useEffect(() => {
+    let alive = true;
     (async () => {
-      const { data } = await supabase
-        .from("companies")
-        .select("id, name, contacts(id, name, title, phone, is_active, contact_emails(email, is_default))")
-        .is("deleted_at", null).order("name");
-      setRows(data || []);
+      try {
+        const c = await withTimeout(sb().from("companies").select("id, name").is("deleted_at", null).order("name"));
+        if (c.error) throw c.error;
+        const ct = await withTimeout(sb().from("contacts").select("id, company_id, name, title, phone, is_active").is("deleted_at", null));
+        if (ct.error) throw ct.error;
+        const em = await withTimeout(sb().from("contact_emails").select("contact_id, email, is_default"));
+        if (em.error) throw em.error;
+        const mailOf = {};
+        for (const m of em.data || []) if (m.is_default) mailOf[m.contact_id] = m.email;
+        const byCo = {};
+        for (const p of ct.data || []) if (p.is_active) (byCo[p.company_id] = byCo[p.company_id] || []).push({ ...p, email: mailOf[p.id] });
+        if (alive) setRows((c.data || []).map(x => ({ ...x, contacts: byCo[x.id] || [] })));
+      } catch (e) {
+        if (alive) { setErr(e.message || "불러오기 실패"); setRows([]); }
+      }
     })();
+    return () => { alive = false; };
   }, []);
-  if (!rows) return <div className="card"><div className="empty">불러오는 중…</div></div>;
+  if (rows === null) return <div className="card"><div className="empty">불러오는 중…</div></div>;
+  if (err) return <div className="card"><div className="msg err">목록 오류: {err}</div></div>;
   if (!rows.length) return <div className="card"><div className="empty">아직 등록된 업체가 없습니다.</div></div>;
   return (
     <div className="card">
@@ -313,9 +335,9 @@ function List() {
       {rows.map(c => (
         <div className="item" key={c.id}>
           <div className="nm">{c.name}</div>
-          {(c.contacts || []).filter(p => p.is_active).map(p => (
+          {c.contacts.map(p => (
             <div className="de" key={p.id}>
-              {[p.name, p.title, p.phone, p.contact_emails?.find(m => m.is_default)?.email].filter(Boolean).join(" · ")}
+              {[p.name, p.title, p.phone, p.email].filter(Boolean).join(" · ")}
             </div>
           ))}
         </div>
