@@ -1,6 +1,18 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { sb, normName } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
+
+const APP_VERSION = "v3";
+let _c = null;
+function sb() {
+  if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
+    auth: { lock: async (_name, _timeout, fn) => await fn() },
+  });
+  return _c;
+}
+function normName(s) {
+  return (s || "").toLowerCase().replace(/\s|\(주\)|㈜|주식회사|\(유\)|유한회사/g, "");
+}
 
 const ROLES = [
   ["staff", "업무담당자"], ["ceo", "대표이사"], ["site_manager", "현장소장"],
@@ -39,12 +51,21 @@ async function shrink(file, max = 1600) {
 
 export default function Page() {
   const [session, setSession] = useState(undefined);
+  const [bootErr, setBootErr] = useState("");
   useEffect(() => {
-    sb().auth.getSession().then(({ data }) => setSession(data.session));
+    let done = false;
+    const t = setTimeout(() => { if (!done) setBootErr("세션 확인이 10초 넘게 걸립니다. 다른 탭을 모두 닫고 새로고침해 보세요."); }, 10000);
+    sb().auth.getSession().then(({ data }) => { done = true; clearTimeout(t); setSession(data.session); })
+      .catch(e => { done = true; clearTimeout(t); setBootErr("세션 오류: " + (e.message || "")); });
     const { data: sub } = sb().auth.onAuthStateChange((_e, s) => { setTimeout(() => setSession(s), 0); });
-    return () => sub.subscription.unsubscribe();
+    return () => { clearTimeout(t); sub.subscription.unsubscribe(); };
   }, []);
-  if (session === undefined) return <div className="wrap"><div className="empty">불러오는 중…</div></div>;
+  if (session === undefined) return (
+    <div className="wrap">
+      <div className="sub">{APP_VERSION}</div>
+      {bootErr ? <div className="msg err">{bootErr}</div> : <div className="empty">세션 확인 중…</div>}
+    </div>
+  );
   if (!session) return <Login />;
   return <Main onLogout={() => sb().auth.signOut()} />;
 }
@@ -87,7 +108,7 @@ function Main({ onLogout }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
           <h1>업체 · 담당자 등록</h1>
-          <div className="sub">안전상생 컨설팅 자동화 · 1단계</div>
+          <div className="sub">안전상생 컨설팅 자동화 · 1단계 · {APP_VERSION}</div>
         </div>
         <button className="btn sm" onClick={onLogout}>로그아웃</button>
       </div>
@@ -298,10 +319,6 @@ function Scan() {
   );
 }
 
-function withTimeout(p, ms = 15000) {
-  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("서버 응답 없음(15초). 새로고침 후 다시 시도하세요.")), ms))]);
-}
-
 function List() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
@@ -326,7 +343,7 @@ function List() {
     })();
     return () => { alive = false; };
   }, []);
-  if (rows === null) return <div className="card"><div className="empty">불러오는 중…</div></div>;
+  if (rows === null) return <div className="card"><div className="empty">목록 불러오는 중… (최대 15초)</div></div>;
   if (err) return <div className="card"><div className="msg err">목록 오류: {err}</div></div>;
   if (!rows.length) return <div className="card"><div className="empty">아직 등록된 업체가 없습니다.</div></div>;
   return (
