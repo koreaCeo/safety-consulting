@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import Record from "./Record";
 
-const APP_VERSION = "v3";
+const APP_VERSION = "v4";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -107,7 +108,7 @@ function Main({ onLogout }) {
     <div className="wrap">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
-          <h1>업체 · 담당자 등록</h1>
+          <h1>안전상생 컨설팅</h1>
           <div className="sub">안전상생 컨설팅 자동화 · 1단계 · {APP_VERSION}</div>
         </div>
         <button className="btn sm" onClick={onLogout}>로그아웃</button>
@@ -115,8 +116,9 @@ function Main({ onLogout }) {
       <div className="tabs">
         <button className={"tab" + (tab === "scan" ? " on" : "")} onClick={() => setTab("scan")}>명함 등록</button>
         <button className={"tab" + (tab === "list" ? " on" : "")} onClick={() => setTab("list")}>업체 목록</button>
+        <button className={"tab" + (tab === "rec" ? " on" : "")} onClick={() => setTab("rec")}>회의 녹음</button>
       </div>
-      {tab === "scan" ? <Scan /> : <List />}
+      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : <Record sb={sb()} />}
     </div>
   );
 }
@@ -152,8 +154,9 @@ function Scan() {
     try {
       const blob = await shrink(file);
       const image = await fileToBase64(blob);
+      const { data: ss } = await sb().auth.getSession();
       const r = await fetch("/api/ocr", {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + (ss.session?.access_token || "") },
         body: JSON.stringify({ image, mediaType: "image/jpeg" }),
       });
       const d = await r.json();

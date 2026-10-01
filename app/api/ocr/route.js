@@ -1,3 +1,4 @@
+import { requireUser } from "../_auth";
 export const runtime = "nodejs";
 
 const PROMPT = `첨부한 이미지는 한국 기업의 종이 명함입니다. 적힌 내용만 그대로 읽어서 JSON 하나로만 답하세요.
@@ -16,6 +17,7 @@ const PROMPT = `첨부한 이미지는 한국 기업의 종이 명함입니다. 
 JSON 외의 설명은 쓰지 마세요.`;
 
 export async function POST(req) {
+  if (!(await requireUser(req))) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return Response.json({ error: "ANTHROPIC_API_KEY 가 설정되지 않았습니다." }, { status: 500 });
 
