@@ -61,7 +61,6 @@ export default function Record({ sb }) {
   const [elapsed, setElapsed] = useState(0);
   const [rows, setRows] = useState([]);
   const [pending, setPending] = useState(0);
-  const [summary, setSummary] = useState(null);
   const [busy, setBusy] = useState("");
 
   const streamRef = useRef(null), recRef = useRef(null), segTimer = useRef(null), tick = useRef(null);
@@ -114,7 +113,6 @@ export default function Record({ sb }) {
         vv = data;
       }
       setVisit(vv); visitRef.current = vv;
-      setSummary(vv.summary_json || null);
       await loadRows(vv.id);
     } catch (e) {
       setMsg({ t: "err", s: "방문 회차를 열지 못했습니다: " + (e.message || "") });
@@ -220,26 +218,19 @@ export default function Record({ sb }) {
     if (visitRef.current?.id === row.visit_id) await loadRows(row.visit_id);
   }
 
-  /* ---------- 요약 ---------- */
-  async function summarize() {
-    const text = rows.filter(r => r.transcript_status === "done").map(r => r.transcript_text).join("\n");
-    if (!text.trim()) { setMsg({ t: "err", s: "변환된 텍스트가 없습니다." }); return; }
-    setBusy("sum"); setMsg({ t: "info", s: "요약 중입니다… (30초~1분)" });
-    try {
-      const co = companies.find(c => c.id === visit.company_id)?.name;
-      const st = STAGES.find(s => s[0] === visit.stage)?.[1] + " " + visit.round_no + "차";
-      const r = await fetch("/api/summarize", {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
-        body: JSON.stringify({ text, company: co, stage: st }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
-      await sb.from("visits").update({ summary_json: d, status: "visited" }).eq("id", visit.id);
-      setSummary(d); setMsg(null);
-    } catch (e) {
-      setMsg({ t: "err", s: "요약 실패: " + (e.message || "") });
-    } finally { setBusy(""); }
+  /* ---------- 전체 스크립트 ---------- */
+  const fullText = rows.filter(r => r.transcript_status === "done").map(r => r.transcript_text).join("\n\n");
+  const [copied, setCopied] = useState(false);
+  async function copyAll() {
+    try { await navigator.clipboard.writeText(fullText); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+  }
+  function saveTxt() {
+    const co = companies.find(c => c.id === visit.company_id)?.name || "업체";
+    const st = STAGES.find(x => x[0] === visit.stage)?.[1] || "";
+    const name = `${co}_${st}${visit.round_no ? "_" + visit.round_no + "차" : ""}_${visit.location_type === "HQ" ? "본사" : "현장"}_회의록.txt`;
+    const url = URL.createObjectURL(new Blob(["\ufeff" + fullText], { type: "text/plain;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   const doneCount = rows.filter(r => r.transcript_status === "done").length;
@@ -288,7 +279,7 @@ export default function Record({ sb }) {
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음</h2>
+          <h2>2. 회의 녹음 <span className="conf">v5</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording
@@ -307,11 +298,6 @@ export default function Record({ sb }) {
                   {r.transcript_status === "failed" && (
                     <div className="de">{r.error_message} <button className="btn sm" onClick={() => transcribe(r)}>다시 변환</button></div>
                   )}
-                  {r.transcript_status === "done" && (
-                    <details><summary className="de" style={{ cursor: "pointer" }}>텍스트 보기</summary>
-                      <div className="de" style={{ whiteSpace: "pre-wrap" }}>{r.transcript_text}</div>
-                    </details>
-                  )}
                 </div>
               ))}
             </div>
@@ -319,35 +305,19 @@ export default function Record({ sb }) {
         </div>
       )}
 
-      {visit && doneCount > 0 && !recording && (
+      {visit && doneCount > 0 && (
         <div className="card">
-          <h2>3. 회의 요약</h2>
-          <div className="actions" style={{ marginTop: 0 }}>
-            <button className="btn primary" onClick={summarize} disabled={busy === "sum"}>
-              {summary ? "요약 다시 만들기" : "요약 만들기"}
-            </button>
+          <h2>3. 전체 스크립트</h2>
+          {doneCount < rows.length && <div className="conf">아직 변환되지 않은 구간이 있습니다. 모두 완료되면 전체가 표시됩니다.</div>}
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button className="btn primary" onClick={copyAll}>{copied ? "복사됨" : "전체 복사"}</button>
+            <button className="btn" onClick={saveTxt}>텍스트 파일로 저장</button>
           </div>
-          {summary && <Summary s={summary} />}
+          <div style={{ marginTop: 12, whiteSpace: "pre-wrap", fontSize: 15, lineHeight: 1.8, maxHeight: 520, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: 14 }}>
+            {fullText}
+          </div>
         </div>
       )}
     </>
-  );
-}
-
-function Summary({ s }) {
-  const sec = [
-    ["status_issues", "현황 및 문제점"], ["improvements", "개선 필요사항"],
-    ["requests_to_company", "업체 제출·조치 요청"], ["next_check", "다음 방문 확인사항"], ["photo_points", "촬영 필요 대상"],
-  ];
-  return (
-    <div style={{ marginTop: 12 }}>
-      {s.overview && <p style={{ margin: "0 0 12px" }}>{s.overview}</p>}
-      {sec.map(([k, l]) => (s[k] && s[k].length ? (
-        <div key={k} style={{ marginBottom: 12 }}>
-          <div className="nm" style={{ fontWeight: 500 }}>{l}</div>
-          <ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>{s[k].map((x, i) => <li key={i} className="de">{x}</li>)}</ul>
-        </div>
-      ) : null))}
-    </div>
   );
 }
