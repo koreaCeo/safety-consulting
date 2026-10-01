@@ -2,8 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import Record from "./Record";
+import Photos from "./Photos";
 
-const APP_VERSION = "v4";
+const APP_VERSION = "v6";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -117,8 +118,9 @@ function Main({ onLogout }) {
         <button className={"tab" + (tab === "scan" ? " on" : "")} onClick={() => setTab("scan")}>명함 등록</button>
         <button className={"tab" + (tab === "list" ? " on" : "")} onClick={() => setTab("list")}>업체 목록</button>
         <button className={"tab" + (tab === "rec" ? " on" : "")} onClick={() => setTab("rec")}>회의 녹음</button>
+        <button className={"tab" + (tab === "photo" ? " on" : "")} onClick={() => setTab("photo")}>현장 사진</button>
       </div>
-      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : <Record sb={sb()} />}
+      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : tab === "rec" ? <Record sb={sb()} /> : <Photos sb={sb()} />}
     </div>
   );
 }
