@@ -1,0 +1,6 @@
+# 안전상생 컨설팅 자동화
+
+## Vercel 환경변수
+- NEXT_PUBLIC_SUPABASE_URL
+- NEXT_PUBLIC_SUPABASE_ANON_KEY
+- ANTHROPIC_API_KEY
