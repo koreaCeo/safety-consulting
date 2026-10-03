@@ -216,7 +216,7 @@ export default function Photos({ sb }) {
       )}
 
       <div className="card">
-        <h2>1. 방문 회차 선택 <span className="conf">v9</span></h2>
+        <h2>1. 방문 회차 선택 <span className="conf">v10</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setVisit(null); }}>
           <option value="">— 업체 선택 —</option>
@@ -335,6 +335,8 @@ function FindingItem({ sb, photo, thumb, onSaved }) {
   const [risk, setRisk] = useState(photo.risk_text || "");
   const [measures, setMeasures] = useState(photo.measures_text || "");
   const [legal, setLegal] = useState(photo.legal_text || "");
+  const [cands, setCands] = useState([]);
+  const [picked, setPicked] = useState([]);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
 
@@ -353,7 +355,10 @@ function FindingItem({ sb, photo, thumb, onSaved }) {
       if (!r.ok) throw new Error(d.error || "분석 실패");
       setRisk(d.risk || "");
       setMeasures((d.measures || []).map((m, i) => `${i + 1}. ${m.replace(/^\d+[.)]\s*/, "")}`).join("\n"));
-      setLegal(d.laws && d.laws.length ? d.laws.join("\n") : "근거조항 확인 필요");
+      const laws = d.laws || [];
+      setCands(laws);
+      setPicked(laws.length ? [laws[0]] : []);
+      setLegal(laws.length ? laws[0] : "근거조항 확인 필요");
       setMsg({ t: "info", s: "초안을 만들었습니다. 확인·수정 후 저장하세요." });
     } catch (e) {
       setMsg({ t: "err", s: e.message || "분석 실패" });
@@ -386,7 +391,23 @@ function FindingItem({ sb, photo, thumb, onSaved }) {
       <textarea value={risk} onChange={e => setRisk(e.target.value)} />
       <label>개선대책</label>
       <textarea value={measures} onChange={e => setMeasures(e.target.value)} style={{ minHeight: 96 }} />
-      <label>근거조항</label>
+      <label>근거조항{cands.length > 1 ? " — 적용할 조문을 선택하세요" : ""}</label>
+      {cands.length > 1 && (
+        <div style={{ marginBottom: 6 }}>
+          {cands.map(c => (
+            <label key={c} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 14, color: "var(--fg)", margin: "6px 0", cursor: "pointer" }}>
+              <input type="checkbox" style={{ width: 18, height: 18, flex: "none", marginTop: 2, accentColor: "var(--accent)" }}
+                checked={picked.includes(c)}
+                onChange={() => {
+                  const next = picked.includes(c) ? picked.filter(x => x !== c) : cands.filter(x => x === c || picked.includes(x));
+                  setPicked(next);
+                  setLegal(next.join("\n"));
+                }} />
+              <span>{c}</span>
+            </label>
+          ))}
+        </div>
+      )}
       <textarea value={legal} onChange={e => setLegal(e.target.value)} />
       <div className="actions" style={{ marginTop: 8 }}>
         <button className="btn sm" onClick={save} disabled={!!busy}>저장</button>
