@@ -62,6 +62,9 @@ export default function Record({ sb }) {
   const [rows, setRows] = useState([]);
   const [pending, setPending] = useState(0);
   const [busy, setBusy] = useState("");
+  const [upMsg, setUpMsg] = useState(null);
+  const [pasteText, setPasteText] = useState("");
+  const textIn = useRef(null);
 
   const streamRef = useRef(null), recRef = useRef(null), segTimer = useRef(null), tick = useRef(null);
   const seqRef = useRef(1), wakeRef = useRef(null), stopping = useRef(false), visitRef = useRef(null);
@@ -207,7 +210,7 @@ export default function Record({ sb }) {
       const r = await fetch("/api/transcribe", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
-        body: JSON.stringify({ url: s.signedUrl, filename: row.seq + ".webm" }),
+        body: JSON.stringify({ url: s.signedUrl, filename: row.storage_path.split("/").pop() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error + (d.detail ? " " + d.detail : ""));
@@ -216,6 +219,31 @@ export default function Record({ sb }) {
       await sb.from("recordings").update({ transcript_status: "failed", error_message: String(e.message || e).slice(0, 300) }).eq("id", row.id);
     }
     if (visitRef.current?.id === row.visit_id) await loadRows(row.visit_id);
+  }
+
+  /* ---------- 회의 자료 올리기 (음성 파일 / 텍스트) ---------- */
+  async function saveText(text, label) {
+    const t = (text || "").replace(/^\ufeff/, "").trim();
+    if (!t) { setUpMsg({ t: "err", s: "내용이 비어 있습니다." }); return; }
+    const seq = seqRef.current++;
+    const { error } = await sb.from("recordings").upsert({
+      visit_id: visit.id, seq, storage_path: null, local_path: label, duration_sec: 0,
+      upload_status: "done", transcript_status: "done", transcript_text: t,
+    }, { onConflict: "visit_id,seq" });
+    if (error) { setUpMsg({ t: "err", s: "저장 실패: " + error.message }); return; }
+    setUpMsg({ t: "info", s: "텍스트를 추가했습니다." });
+    await loadRows(visit.id);
+  }
+
+  async function onTextFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !visit) return;
+    const buf = await file.arrayBuffer();
+    let t;
+    try { t = new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+    catch { t = new TextDecoder("euc-kr").decode(buf); }
+    await saveText(t, file.name);
   }
 
   /* ---------- 전체 스크립트 ---------- */
@@ -279,7 +307,7 @@ export default function Record({ sb }) {
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음 <span className="conf">v5</span></h2>
+          <h2>2. 회의 녹음 <span className="conf">v8</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording
@@ -294,7 +322,7 @@ export default function Record({ sb }) {
             <div style={{ marginTop: 16 }}>
               {rows.map(r => (
                 <div className="item" key={r.id}>
-                  <div className="nm">구간 {r.seq} · {fmt(r.duration_sec || 0)} · {STATUS[r.transcript_status]}</div>
+                  <div className="nm">{r.local_path || "녹음 구간 " + r.seq}{r.duration_sec ? " · " + fmt(r.duration_sec) : ""} · {r.storage_path ? STATUS[r.transcript_status] : "텍스트"}</div>
                   {r.transcript_status === "failed" && (
                     <div className="de">{r.error_message} <button className="btn sm" onClick={() => transcribe(r)}>다시 변환</button></div>
                   )}
@@ -302,6 +330,23 @@ export default function Record({ sb }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {visit && !recording && (
+        <div className="card">
+          <h2>회의 자료 올리기</h2>
+          <div className="conf">이미 만든 회의록 텍스트를 이 회차에 추가합니다. (변환 비용 없음)</div>
+          <input ref={textIn} type="file" accept=".txt,text/plain" className="hidden" onChange={onTextFile} />
+          <div className="actions">
+            <button className="btn" disabled={busy === "up"} onClick={() => textIn.current.click()}>텍스트 파일 올리기</button>
+          </div>
+          <label>또는 텍스트 붙여넣기</label>
+          <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="회의록 내용을 여기에 붙여넣으세요" />
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button className="btn sm" disabled={!pasteText.trim()} onClick={async () => { await saveText(pasteText, "붙여넣은 텍스트"); setPasteText(""); }}>붙여넣은 내용 추가</button>
+          </div>
+          {upMsg && <div className={"msg " + upMsg.t}>{upMsg.s}</div>}
         </div>
       )}
 
