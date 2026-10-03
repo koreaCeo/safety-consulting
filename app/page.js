@@ -3,8 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import Record from "./Record";
 import Photos from "./Photos";
+import Checklist from "./Checklist";
 
-const APP_VERSION = "v11";
+const APP_VERSION = "v13";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -114,13 +115,14 @@ function Main({ onLogout }) {
         </div>
         <button className="btn sm" onClick={onLogout}>로그아웃</button>
       </div>
-      <div className="tabs">
+      <div className="tabs" style={{ overflowX: "auto", whiteSpace: "nowrap" }}>
         <button className={"tab" + (tab === "scan" ? " on" : "")} onClick={() => setTab("scan")}>명함 등록</button>
         <button className={"tab" + (tab === "list" ? " on" : "")} onClick={() => setTab("list")}>업체 목록</button>
         <button className={"tab" + (tab === "rec" ? " on" : "")} onClick={() => setTab("rec")}>회의 녹음</button>
         <button className={"tab" + (tab === "photo" ? " on" : "")} onClick={() => setTab("photo")}>현장 사진</button>
+        <button className={"tab" + (tab === "check" ? " on" : "")} onClick={() => setTab("check")}>평가지표</button>
       </div>
-      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : tab === "rec" ? <Record sb={sb()} /> : <Photos sb={sb()} />}
+      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : tab === "rec" ? <Record sb={sb()} /> : tab === "photo" ? <Photos sb={sb()} /> : <Checklist sb={sb()} />}
     </div>
   );
 }
@@ -329,10 +331,22 @@ function List() {
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [busyId, setBusyId] = useState("");
+  const [openPrep, setOpenPrep] = useState("");
+  const [prepText, setPrepText] = useState("");
+
+  async function savePrep(c) {
+    setBusyId("prep" + c.id);
+    const now = new Date().toISOString();
+    const { error } = await sb().from("companies").update({ prep_note: prepText, prep_updated_at: now }).eq("id", c.id);
+    setBusyId("");
+    if (error) { alert("저장 실패: " + error.message); return; }
+    setRows(rs => rs.map(x => x.id === c.id ? { ...x, prep_note: prepText, prep_updated_at: now } : x));
+    setOpenPrep("");
+  }
 
   async function load() {
     try {
-      const c = await withTimeout(sb().from("companies").select("id, name").is("deleted_at", null).order("name"));
+      const c = await withTimeout(sb().from("companies").select("id, name, prep_note, prep_updated_at").is("deleted_at", null).order("name"));
       if (c.error) throw c.error;
       const ct = await withTimeout(sb().from("contacts").select("id, company_id, name, title, dept, phone, is_active").is("deleted_at", null));
       if (ct.error) throw ct.error;
@@ -380,14 +394,31 @@ function List() {
 
   return (
     <div className="card">
-      <h2>등록된 업체 ({rows.length}) <span className="conf">v11</span></h2>
+      <h2>등록된 업체 ({rows.length}) <span className="conf">v13</span></h2>
       <input placeholder="업체명, 담당자 이름, 전화번호, 메일로 검색" value={q} onChange={e => setQ(e.target.value)} />
       {!rows.length && <div className="empty">아직 등록된 업체가 없습니다.</div>}
       {rows.length > 0 && !shown.length && <div className="empty">검색 결과가 없습니다.</div>}
       <div style={{ marginTop: 12 }}>
         {shown.map(c => (
           <div className="item" key={c.id}>
-            <div className="nm">{c.name}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div className="nm" style={{ flex: 1 }}>{c.name}</div>
+              <button className="btn sm" onClick={() => { setOpenPrep(openPrep === c.id ? "" : c.id); setPrepText(c.prep_note || ""); }}>
+                준비자료{c.prep_note ? " ✓" : ""}
+              </button>
+            </div>
+            {openPrep === c.id && (
+              <div style={{ margin: "8px 0 10px" }}>
+                <div className="conf" style={{ marginTop: 0 }}>
+                  채팅에서 만든 다음 회차 준비자료를 붙여넣으세요.{c.prep_updated_at ? ` (마지막 저장 ${new Date(c.prep_updated_at).toLocaleString("ko-KR")})` : ""}
+                </div>
+                <textarea value={prepText} onChange={e => setPrepText(e.target.value)} style={{ minHeight: 220, fontSize: 14 }} placeholder="여기에 붙여넣기" />
+                <div className="actions" style={{ marginTop: 8 }}>
+                  <button className="btn primary sm" onClick={() => savePrep(c)} disabled={busyId === "prep" + c.id}>저장</button>
+                  <button className="btn sm" onClick={() => setOpenPrep("")}>닫기</button>
+                </div>
+              </div>
+            )}
             {c.contacts.length === 0 && <div className="de">등록된 담당자 없음</div>}
             {c.contacts.map(p => (
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>

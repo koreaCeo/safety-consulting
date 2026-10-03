@@ -53,6 +53,7 @@ export default function Photos({ sb }) {
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState("");
   const [viewer, setViewer] = useState(null);
+  const [prep, setPrep] = useState(null);
   const visitRef = useRef(null);
   const camRef = useRef(null), albRef = useRef(null), targetCat = useRef("");
 
@@ -100,6 +101,8 @@ export default function Photos({ sb }) {
       const { data: rs } = await sb.from("photo_rules").select("*").eq("stage", vv.stage).in("location_type", [vv.location_type, "ANY"]).order("sort_order");
       setRules(rs || []);
       setVisit(vv); visitRef.current = vv;
+      const { data: co } = await sb.from("companies").select("prep_note, prep_updated_at").eq("id", vv.company_id).single();
+      setPrep(co?.prep_note ? co : null);
       await loadPhotos(vv.id);
     } catch (e) {
       setMsg({ t: "err", s: "회차를 열지 못했습니다: " + (e.message || "") });
@@ -217,7 +220,7 @@ export default function Photos({ sb }) {
       )}
 
       <div className="card">
-        <h2>1. 방문 회차 선택 <span className="conf">v11</span></h2>
+        <h2>1. 방문 회차 선택 <span className="conf">v13</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setVisit(null); }}>
           <option value="">— 업체 선택 —</option>
@@ -257,6 +260,16 @@ export default function Photos({ sb }) {
         )}
         {msg && !visit && <div className={"msg " + msg.t}>{msg.s}</div>}
       </div>
+
+      {visit && prep && (
+        <div className="card">
+          <details>
+            <summary style={{ cursor: "pointer", fontWeight: 600 }}>다음 회차 준비자료 보기</summary>
+            <div className="conf">{prep.prep_updated_at ? `저장 ${new Date(prep.prep_updated_at).toLocaleString("ko-KR")}` : ""}</div>
+            <div style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.7, marginTop: 8 }}>{prep.prep_note}</div>
+          </details>
+        </div>
+      )}
 
       {visit && (
         <>
