@@ -1,31 +1,10 @@
 import { requireUser } from "../_auth";
+import { search, lawId, lawLabel } from "./search";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-// 법제처 원문으로 확인된 조문만 사용 (AI는 이 목록의 ID만 고를 수 있음)
-const LAWS = {
-  R13:  "산업안전보건기준에 관한 규칙 제13조(안전난간의 구조 및 설치요건)",
-  R14:  "산업안전보건기준에 관한 규칙 제14조(낙하물에 의한 위험의 방지)",
-  R42:  "산업안전보건기준에 관한 규칙 제42조(추락의 방지)",
-  R43:  "산업안전보건기준에 관한 규칙 제43조(개구부 등의 방호 조치)",
-  R67:  "산업안전보건기준에 관한 규칙 제67조(말비계)",
-  R301: "산업안전보건기준에 관한 규칙 제301조(전기 기계·기구 등의 충전부 방호)",
-  R302: "산업안전보건기준에 관한 규칙 제302조(전기 기계·기구의 접지)",
-  R303: "산업안전보건기준에 관한 규칙 제303조(전기 기계·기구의 적정설치 등)",
-  R304: "산업안전보건기준에 관한 규칙 제304조(누전차단기에 의한 감전방지)",
-  R305: "산업안전보건기준에 관한 규칙 제305조(과전류 차단장치)",
-  R309: "산업안전보건기준에 관한 규칙 제309조(임시로 사용하는 전등 등의 위험 방지)",
-  R313: "산업안전보건기준에 관한 규칙 제313조(배선 등의 절연피복 등)",
-  R314: "산업안전보건기준에 관한 규칙 제314조(습윤한 장소의 이동전선 등)",
-  R315: "산업안전보건기준에 관한 규칙 제315조(통로바닥에서의 전선 등 사용 금지)",
-  R316: "산업안전보건기준에 관한 규칙 제316조(꽂음접속기의 설치·사용 시 준수사항)",
-  R317: "산업안전보건기준에 관한 규칙 제317조(이동 및 휴대장비 등의 사용 전기 작업)",
-  L115: "산업안전보건법 제115조(물질안전보건자료대상물질 용기 등의 경고표시)",
-};
-
-const LAW_LIST = Object.entries(LAWS).map(([k, v]) => `${k}: ${v}`).join("\n");
-
-function buildPrompt(note) {
+function buildPrompt(note, cands) {
+  const list = cands.map(a => `${lawId(a)} | ${lawLabel(a)} | ${a.x.slice(0, 200)}`).join("\n");
   return `당신은 건설현장 안전점검을 수행하는 산업안전지도사의 보조자입니다.
 첨부 사진은 건설현장 지적사항 사진이고, 아래 "전문가 의견"은 지도사가 현장에서 직접 판단해 적은 키워드입니다.
 
@@ -41,10 +20,10 @@ function buildPrompt(note) {
    견본1: 가설 전기기구의 고정·방호 불량에 따른 전선 접속부 이완 및 손상으로 감전·단락에 의한 화재 발생위험
    견본2: 유해위험물질 용기의 경고표지 미부착에 따른 유해·위험성 인지 부족으로 피부 접촉·흡입에 의한 건강장해 발생위험
 7. measures: 실제 조치 순서대로 3~4개. 각 항목은 짧은 명사형 문장.
-8. laws: 아래 목록에서 이 지적사항에 적용될 수 있는 조문 후보를 관련도 높은 순으로 최대 3개 고른다(지도사가 그중에서 선택함). 산업안전보건기준에 관한 규칙(R로 시작)을 먼저 검토하고, 해당 조문이 없을 때만 산업안전보건법(L로 시작)을 고른다. 관련 있는 것이 1개뿐이면 1개만. 맞는 것이 없으면 빈 배열.
+8. laws: 아래 "조문 후보"(법령 원문에서 검색한 실제 조문)에서 이 지적사항에 적용되는 조문의 ID를 관련도 높은 순으로 최대 3개 고른다. 지도사가 그중에서 선택하므로, 직접 관련된 조문이 여러 개면 2~3개, 1개뿐이면 1개만 고른다. 산업안전보건기준에 관한 규칙(R)을 우선하고, 규칙에 해당 조문이 없을 때만 법(L)·시행규칙(S)·시행령(E)에서 고른다. 후보에 없는 조문은 절대 쓰지 않는다. 맞는 것이 없으면 빈 배열.
 
-조문 목록:
-${LAW_LIST}
+조문 후보 (ID | 조문 | 본문 앞부분):
+${list || "(후보 없음)"}
 
 JSON 하나로만 답한다. 형식:
 {"risk":"","measures":["",""],"laws":["R304"]}`;
@@ -63,6 +42,10 @@ export async function POST(req) {
   if (!img.ok) return Response.json({ error: "사진을 가져오지 못했습니다." }, { status: 502 });
   const b64 = Buffer.from(await img.arrayBuffer()).toString("base64");
 
+  const n = (note || "").slice(0, 1000);
+  const cands = search(n);
+  const byId = Object.fromEntries(cands.map(a => [lawId(a), a]));
+
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
@@ -73,7 +56,7 @@ export async function POST(req) {
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-          { type: "text", text: buildPrompt((note || "").slice(0, 1000)) },
+          { type: "text", text: buildPrompt(n, cands) },
         ],
       }],
     }),
@@ -86,15 +69,12 @@ export async function POST(req) {
   let out;
   try { out = JSON.parse(m[0]); } catch { return Response.json({ error: "분석 결과를 해석하지 못했습니다." }, { status: 502 }); }
 
-  // 목록에 없는 조문은 버림 → 조문 번호를 지어낼 수 없음
-  const ids = Array.isArray(out.laws) ? out.laws.filter(id => LAWS[id]) : [];
-  const uniq = [...new Set(ids)].slice(0, 3);
-  // 기준규칙이 하나라도 있으면 법(L) 조문은 제외
-  const finalIds = uniq.some(id => id.startsWith("R")) ? uniq.filter(id => id.startsWith("R")) : uniq;
+  // 검색된 실제 조문 후보에 있는 것만 통과 → 조문 번호를 지어낼 수 없음
+  const ids = [...new Set((Array.isArray(out.laws) ? out.laws : []).map(String).filter(id => byId[id]))].slice(0, 3);
 
   return Response.json({
     risk: String(out.risk || "").trim(),
     measures: (Array.isArray(out.measures) ? out.measures : []).map(s => String(s).trim()).filter(Boolean).slice(0, 5),
-    laws: finalIds.map(id => LAWS[id]),
+    laws: ids.map(id => lawLabel(byId[id])),
   });
 }
