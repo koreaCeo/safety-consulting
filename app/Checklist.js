@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import JSZip from "jszip";
 import { ITEMS } from "./api/checklist/items";
 
 const STAGES = [["DIAG", "수준진단"], ["I", "I단계"], ["S", "S단계"], ["P", "P단계"]];
@@ -16,6 +17,7 @@ export default function Checklist({ sb }) {
   const [baseFrom, setBaseFrom] = useState("");
   const [transcript, setTranscript] = useState("");
   const [visitInfo, setVisitInfo] = useState("");
+  const [visits, setVisits] = useState([]);
   const [onlyFilled, setOnlyFilled] = useState(false);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
@@ -58,6 +60,7 @@ export default function Checklist({ sb }) {
       // 3) 이 단계 회차들의 회의 스크립트 모으기
       const { data: vs } = await sb.from("visits").select("id, round_no, location_type")
         .eq("company_id", companyId).eq("stage", stage).is("deleted_at", null).order("round_no");
+      setVisits(vs || []);
       const ids = (vs || []).map(v => v.id);
       let text = "";
       if (ids.length) {
@@ -117,6 +120,70 @@ export default function Checklist({ sb }) {
     else { setMsg({ t: "info", s: "저장했습니다." }); setBaseFrom(""); }
   }
 
+  async function bundle() {
+    if (!visits.length) { setMsg({ t: "err", s: "이 단계에 열린 회차가 없습니다." }); return; }
+    setBusy("zip"); setMsg({ t: "info", s: "재료를 모으는 중입니다… (사진이 많으면 1~2분)" });
+    try {
+      const co = companies.find(c => c.id === companyId)?.name || "업체";
+      const stName = STAGES.find(x => x[0] === stage)[1];
+      const zip = new JSZip();
+      const label = v => `${v.round_no ? v.round_no + "차_" : ""}${v.location_type === "HQ" ? "본사" : "현장"}`;
+      const ids = visits.map(v => v.id);
+
+      // 1) 회의록 (회차별)
+      const { data: rs } = await sb.from("recordings").select("visit_id, seq, local_path, transcript_text, transcript_status")
+        .in("visit_id", ids).eq("transcript_status", "done").order("seq");
+      for (const v of visits) {
+        const t = (rs || []).filter(r => r.visit_id === v.id).map(r => r.transcript_text).join("\n\n");
+        if (t.trim()) zip.file(`회의록/${stName}_${label(v)}_회의록.txt`, "\ufeff" + t);
+      }
+
+      // 2) 사진 + 지적사항
+      const { data: ph } = await sb.from("photos").select("*").in("visit_id", ids).is("deleted_at", null).order("seq");
+      const list = (ph || []).filter(p => p.storage_path);
+      let n = 0;
+      const findings = [];
+      if (list.length) {
+        const { data: su } = await sb.storage.from("photos").createSignedUrls(list.map(p => p.storage_path), 600);
+        const urlOf = {}; (su || []).forEach(x => { if (x.signedUrl) urlOf[x.path] = x.signedUrl; });
+        for (const p of list) {
+          const v = visits.find(x => x.id === p.visit_id);
+          const name = p.file_name || `${label(v)}_${p.category}_${p.seq}.jpg`;
+          const u = urlOf[p.storage_path];
+          if (u) {
+            const b = await (await fetch(u)).blob();
+            zip.file(`사진/${label(v)}/${name}`, b);
+            n++;
+            setMsg({ t: "info", s: `사진 내려받는 중… (${n}/${list.length})` });
+          }
+          if (p.category === "finding" && (p.risk_text || p.measures_text || p.expert_note)) {
+            findings.push(`[${name}]\n전문가 의견: ${p.expert_note || "-"}\n위험요인: ${p.risk_text || "-"}\n개선대책:\n${p.measures_text || "-"}\n근거조항:\n${p.legal_text || "-"}`);
+          }
+        }
+      }
+      if (findings.length) zip.file(`지적사항_${stName}.txt`, "\ufeff" + findings.join("\n\n----------\n\n"));
+
+      // 3) 평가지표 엑셀 (현재 화면 내용 + 점수)
+      const r = await fetch("/api/checklist", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
+        body: JSON.stringify({ action: "export", company: co, stage, rows }),
+      });
+      if (r.ok) zip.file(`${co}_${stName}_평가지표.xlsx`, await r.blob());
+
+      zip.file("안내.txt", "\ufeff" + `${co} ${stName} 보고서 재료\n회차 ${visits.length}개 · 사진 ${n}장 · 지적사항 ${findings.length}건\n\n이 압축 파일과 앞 단계 최종본(평가지표·결과보고서), 일반현황을 채팅에 올리고\n"${stName} 평가지표 다듬고 결과보고서 만들어줘"라고 요청하세요.`);
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${co}_${stName}_보고서재료.zip`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      setMsg({ t: "info", s: `내려받았습니다 — 회의록 ${visits.length}회차, 사진 ${n}장, 지적사항 ${findings.length}건, 평가지표 엑셀` });
+    } catch (e) {
+      setMsg({ t: "err", s: "재료 묶음 실패: " + (e.message || "") });
+    } finally { setBusy(""); }
+  }
+
   async function download() {
     setBusy("xlsx"); setMsg(null);
     try {
@@ -146,7 +213,7 @@ export default function Checklist({ sb }) {
   return (
     <>
       <div className="card">
-        <h2>평가지표 체크리스트 <span className="conf">v12</span></h2>
+        <h2>평가지표 체크리스트 <span className="conf">v15</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setLoaded(false); }}>
           <option value="">— 업체 선택 —</option>
@@ -170,7 +237,9 @@ export default function Checklist({ sb }) {
             <button className="btn primary" onClick={draft} disabled={!!busy}>AI 초안 만들기</button>
             <button className="btn" onClick={save} disabled={!!busy}>저장</button>
             <button className="btn" onClick={download} disabled={!!busy}>엑셀 내려받기</button>
+            <button className="btn" onClick={bundle} disabled={!!busy}>보고서 재료 내려받기</button>
           </div>
+          <div className="conf">점수까지 넣고 저장한 뒤 "보고서 재료 내려받기"를 누르면 회의록·사진·지적사항·평가지표 엑셀이 압축 하나로 받아집니다.</div>
           <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, cursor: "pointer" }}>
             <input type="checkbox" checked={onlyFilled} onChange={e => setOnlyFilled(e.target.checked)} style={{ width: 18, height: 18 }} />
             내용 있는 항목만 보기
