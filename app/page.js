@@ -5,7 +5,7 @@ import Record from "./Record";
 import Photos from "./Photos";
 import Checklist from "./Checklist";
 
-const APP_VERSION = "v13";
+const APP_VERSION = "v14";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -330,19 +330,7 @@ function List() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
-  const [busyId, setBusyId] = useState("");
-  const [openPrep, setOpenPrep] = useState("");
-  const [prepText, setPrepText] = useState("");
-
-  async function savePrep(c) {
-    setBusyId("prep" + c.id);
-    const now = new Date().toISOString();
-    const { error } = await sb().from("companies").update({ prep_note: prepText, prep_updated_at: now }).eq("id", c.id);
-    setBusyId("");
-    if (error) { alert("저장 실패: " + error.message); return; }
-    setRows(rs => rs.map(x => x.id === c.id ? { ...x, prep_note: prepText, prep_updated_at: now } : x));
-    setOpenPrep("");
-  }
+  const [sel, setSel] = useState(null);
 
   async function load() {
     try {
@@ -350,7 +338,7 @@ function List() {
       if (c.error) throw c.error;
       const ct = await withTimeout(sb().from("contacts").select("id, company_id, name, title, dept, phone, is_active").is("deleted_at", null));
       if (ct.error) throw ct.error;
-      const em = await withTimeout(sb().from("contact_emails").select("contact_id, email, is_default"));
+      const em = await withTimeout(sb().from("contact_emails").select("id, contact_id, email, is_default"));
       if (em.error) throw em.error;
       const mailsOf = {};
       for (const m of em.data || []) (mailsOf[m.contact_id] = mailsOf[m.contact_id] || []).push(m);
@@ -358,7 +346,7 @@ function List() {
       for (const p of ct.data || []) if (p.is_active) {
         const ms = mailsOf[p.id] || [];
         (byCo[p.company_id] = byCo[p.company_id] || []).push({
-          ...p, email: (ms.find(m => m.is_default) || ms[0] || {}).email || "", allMails: ms.map(m => m.email),
+          ...p, mails: ms, email: (ms.find(m => m.is_default) || ms[0] || {}).email || "",
         });
       }
       setRows((c.data || []).map(x => ({ ...x, contacts: byCo[x.id] || [] })));
@@ -369,68 +357,160 @@ function List() {
   }
   useEffect(() => { load(); }, []);
 
-  async function removeContact(p, coName) {
-    if (!confirm(`${coName} · ${p.name} 담당자를 삭제할까요?`)) return;
-    setBusyId(p.id);
-    const { error } = await sb().from("contacts")
-      .update({ is_active: false, is_primary: false, deleted_at: new Date().toISOString() }).eq("id", p.id);
-    setBusyId("");
-    if (error) { alert("삭제 실패: " + error.message); return; }
-    setRows(rs => rs.map(c => ({ ...c, contacts: c.contacts.filter(x => x.id !== p.id) })));
-  }
-
   if (rows === null) return <div className="card"><div className="empty">목록 불러오는 중… (최대 15초)</div></div>;
   if (err) return <div className="card"><div className="msg err">목록 오류: {err}</div></div>;
 
+  if (sel) {
+    const c = rows.find(x => x.id === sel);
+    if (c) return <CompanyDetail c={c} onBack={() => setSel(null)} onChanged={load} />;
+  }
+
   const key = q.trim().toLowerCase().replace(/[\s-]/g, "");
   const match = v => (v || "").toLowerCase().replace(/[\s-]/g, "").includes(key);
-  const shown = !key ? rows : rows
-    .map(c => {
-      if (match(c.name)) return c;
-      const hit = c.contacts.filter(p => match(p.name) || match(p.phone) || match(p.title) || match(p.dept) || p.allMails.some(match));
-      return hit.length ? { ...c, contacts: hit } : null;
-    })
-    .filter(Boolean);
+  const shown = !key ? rows : rows.filter(c =>
+    match(c.name) || c.contacts.some(p => match(p.name) || match(p.phone) || match(p.title) || match(p.dept) || p.mails.some(m => match(m.email))));
 
   return (
     <div className="card">
-      <h2>등록된 업체 ({rows.length}) <span className="conf">v13</span></h2>
+      <h2>등록된 업체 ({rows.length}) <span className="conf">v14</span></h2>
       <input placeholder="업체명, 담당자 이름, 전화번호, 메일로 검색" value={q} onChange={e => setQ(e.target.value)} />
       {!rows.length && <div className="empty">아직 등록된 업체가 없습니다.</div>}
       {rows.length > 0 && !shown.length && <div className="empty">검색 결과가 없습니다.</div>}
       <div style={{ marginTop: 12 }}>
         {shown.map(c => (
-          <div className="item" key={c.id}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button key={c.id} className="item" onClick={() => setSel(c.id)}
+            style={{ display: "block", width: "100%", textAlign: "left", cursor: "pointer", font: "inherit", color: "inherit" }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
               <div className="nm" style={{ flex: 1 }}>{c.name}</div>
-              <button className="btn sm" onClick={() => { setOpenPrep(openPrep === c.id ? "" : c.id); setPrepText(c.prep_note || ""); }}>
-                준비자료{c.prep_note ? " ✓" : ""}
-              </button>
+              <span className="conf" style={{ marginTop: 0 }}>담당자 {c.contacts.length}명{c.prep_note ? " · 준비자료 ✓" : ""} ›</span>
             </div>
-            {openPrep === c.id && (
-              <div style={{ margin: "8px 0 10px" }}>
-                <div className="conf" style={{ marginTop: 0 }}>
-                  채팅에서 만든 다음 회차 준비자료를 붙여넣으세요.{c.prep_updated_at ? ` (마지막 저장 ${new Date(c.prep_updated_at).toLocaleString("ko-KR")})` : ""}
-                </div>
-                <textarea value={prepText} onChange={e => setPrepText(e.target.value)} style={{ minHeight: 220, fontSize: 14 }} placeholder="여기에 붙여넣기" />
-                <div className="actions" style={{ marginTop: 8 }}>
-                  <button className="btn primary sm" onClick={() => savePrep(c)} disabled={busyId === "prep" + c.id}>저장</button>
-                  <button className="btn sm" onClick={() => setOpenPrep("")}>닫기</button>
-                </div>
-              </div>
-            )}
-            {c.contacts.length === 0 && <div className="de">등록된 담당자 없음</div>}
-            {c.contacts.map(p => (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                <div className="de" style={{ flex: 1, marginTop: 0 }}>
-                  {[p.name, p.title, p.phone, p.email].filter(Boolean).join(" · ")}
-                </div>
-                <button className="btn sm danger" disabled={busyId === p.id} onClick={() => removeContact(p, c.name)}>삭제</button>
-              </div>
+            {c.contacts.slice(0, 2).map(p => (
+              <div className="de" key={p.id}>{[p.name, p.title, p.phone].filter(Boolean).join(" · ")}</div>
             ))}
-          </div>
+          </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function CompanyDetail({ c, onBack, onChanged }) {
+  const [edit, setEdit] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [drafts, setDrafts] = useState({});
+  const [prepOpen, setPrepOpen] = useState(false);
+  const [prepText, setPrepText] = useState(c.prep_note || "");
+  const [msg, setMsg] = useState(null);
+
+  function startEdit() {
+    const d = {};
+    for (const p of c.contacts) d[p.id] = { name: p.name || "", title: p.title || "", dept: p.dept || "", phone: p.phone || "",
+      def: (p.mails.find(m => m.is_default) || p.mails[0] || {}).id || "" };
+    setDrafts(d); setEdit(true); setMsg(null);
+  }
+  const set = (id, k) => e => setDrafts(d => ({ ...d, [id]: { ...d[id], [k]: e.target.value } }));
+
+  async function saveAll() {
+    setBusy(true); setMsg(null);
+    try {
+      for (const p of c.contacts) {
+        const d = drafts[p.id]; if (!d) continue;
+        if (!d.name.trim()) throw new Error("담당자 이름은 비울 수 없습니다.");
+        const { error } = await sb().from("contacts").update({ name: d.name.trim(), title: d.title, dept: d.dept, phone: d.phone }).eq("id", p.id);
+        if (error) throw error;
+        const cur = (p.mails.find(m => m.is_default) || {}).id || "";
+        if (d.def && d.def !== cur) {
+          await sb().from("contact_emails").update({ is_default: false }).eq("contact_id", p.id);
+          const r = await sb().from("contact_emails").update({ is_default: true }).eq("id", d.def);
+          if (r.error) throw r.error;
+        }
+      }
+      setEdit(false); await onChanged();
+    } catch (e) { setMsg({ t: "err", s: "저장 실패: " + (e.message || "") }); }
+    finally { setBusy(false); }
+  }
+
+  async function removeContact(p) {
+    if (!confirm(`${c.name} · ${p.name} 담당자를 삭제할까요?`)) return;
+    setBusy(true);
+    const { error } = await sb().from("contacts")
+      .update({ is_active: false, is_primary: false, deleted_at: new Date().toISOString() }).eq("id", p.id);
+    setBusy(false);
+    if (error) { setMsg({ t: "err", s: "삭제 실패: " + error.message }); return; }
+    await onChanged();
+  }
+
+  async function savePrep() {
+    setBusy(true);
+    const now = new Date().toISOString();
+    const { error } = await sb().from("companies").update({ prep_note: prepText, prep_updated_at: now }).eq("id", c.id);
+    setBusy(false);
+    if (error) { setMsg({ t: "err", s: "저장 실패: " + error.message }); return; }
+    setPrepOpen(false); await onChanged();
+  }
+
+  return (
+    <div className="card">
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button className="btn sm" onClick={onBack}>‹ 목록</button>
+        <h2 style={{ flex: 1, margin: 0 }}>{c.name}</h2>
+        {!edit
+          ? <button className="btn sm" onClick={startEdit}>편집</button>
+          : <button className="btn sm" onClick={() => setEdit(false)} disabled={busy}>편집 취소</button>}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div className="nm" style={{ fontWeight: 600 }}>담당자</div>
+        {c.contacts.length === 0 && <div className="empty">등록된 담당자 없음</div>}
+        {c.contacts.map(p => !edit ? (
+          <div className="item" key={p.id} style={{ marginTop: 8 }}>
+            <div className="nm">{p.name}{p.title ? ` · ${p.title}` : ""}{p.dept ? ` · ${p.dept}` : ""}</div>
+            {p.phone && <div className="de"><a href={`tel:${p.phone}`}>{p.phone}</a></div>}
+            {p.mails.map(m => <div className="de" key={m.id}>{m.email}{m.is_default ? " (기본)" : ""}</div>)}
+          </div>
+        ) : (
+          <div className="item" key={p.id} style={{ marginTop: 8 }}>
+            <div className="row">
+              <div><label>이름</label><input value={drafts[p.id]?.name || ""} onChange={set(p.id, "name")} /></div>
+              <div><label>직책</label><input value={drafts[p.id]?.title || ""} onChange={set(p.id, "title")} /></div>
+            </div>
+            <div className="row">
+              <div><label>부서</label><input value={drafts[p.id]?.dept || ""} onChange={set(p.id, "dept")} /></div>
+              <div><label>전화</label><input value={drafts[p.id]?.phone || ""} onChange={set(p.id, "phone")} /></div>
+            </div>
+            {p.mails.length > 0 && (<>
+              <label>기본 메일</label>
+              <select value={drafts[p.id]?.def || ""} onChange={set(p.id, "def")}>
+                {p.mails.map(m => <option key={m.id} value={m.id}>{m.email}</option>)}
+              </select>
+            </>)}
+            <div className="actions" style={{ marginTop: 10 }}>
+              <button className="btn sm danger" onClick={() => removeContact(p)} disabled={busy}>이 담당자 삭제</button>
+            </div>
+          </div>
+        ))}
+        {edit && c.contacts.length > 0 && (
+          <div className="actions"><button className="btn primary" onClick={saveAll} disabled={busy}>변경 저장</button></div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="nm" style={{ fontWeight: 600, flex: 1 }}>다음 회차 준비자료</div>
+          {!prepOpen && <button className="btn sm" onClick={() => { setPrepText(c.prep_note || ""); setPrepOpen(true); }}>{c.prep_note ? "수정" : "붙여넣기"}</button>}
+        </div>
+        {c.prep_updated_at && !prepOpen && <div className="conf">저장 {new Date(c.prep_updated_at).toLocaleString("ko-KR")}</div>}
+        {!prepOpen && c.prep_note && <div style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.7, marginTop: 8 }}>{c.prep_note}</div>}
+        {!prepOpen && !c.prep_note && <div className="conf">채팅에서 만든 준비자료를 붙여넣으면 여기와 현장 사진 탭에서 볼 수 있습니다.</div>}
+        {prepOpen && (<>
+          <textarea value={prepText} onChange={e => setPrepText(e.target.value)} style={{ minHeight: 240, fontSize: 14, marginTop: 8 }} placeholder="여기에 붙여넣기" />
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button className="btn primary sm" onClick={savePrep} disabled={busy}>저장</button>
+            <button className="btn sm" onClick={() => setPrepOpen(false)}>닫기</button>
+          </div>
+        </>)}
+      </div>
+      {msg && <div className={"msg " + msg.t}>{msg.s}</div>}
     </div>
   );
 }
