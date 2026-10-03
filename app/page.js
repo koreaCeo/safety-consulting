@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import Record from "./Record";
 import Photos from "./Photos";
 
-const APP_VERSION = "v6";
+const APP_VERSION = "v11";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -327,43 +327,79 @@ function Scan() {
 function List() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const c = await withTimeout(sb().from("companies").select("id, name").is("deleted_at", null).order("name"));
-        if (c.error) throw c.error;
-        const ct = await withTimeout(sb().from("contacts").select("id, company_id, name, title, phone, is_active").is("deleted_at", null));
-        if (ct.error) throw ct.error;
-        const em = await withTimeout(sb().from("contact_emails").select("contact_id, email, is_default"));
-        if (em.error) throw em.error;
-        const mailOf = {};
-        for (const m of em.data || []) if (m.is_default) mailOf[m.contact_id] = m.email;
-        const byCo = {};
-        for (const p of ct.data || []) if (p.is_active) (byCo[p.company_id] = byCo[p.company_id] || []).push({ ...p, email: mailOf[p.id] });
-        if (alive) setRows((c.data || []).map(x => ({ ...x, contacts: byCo[x.id] || [] })));
-      } catch (e) {
-        if (alive) { setErr(e.message || "불러오기 실패"); setRows([]); }
+  const [q, setQ] = useState("");
+  const [busyId, setBusyId] = useState("");
+
+  async function load() {
+    try {
+      const c = await withTimeout(sb().from("companies").select("id, name").is("deleted_at", null).order("name"));
+      if (c.error) throw c.error;
+      const ct = await withTimeout(sb().from("contacts").select("id, company_id, name, title, dept, phone, is_active").is("deleted_at", null));
+      if (ct.error) throw ct.error;
+      const em = await withTimeout(sb().from("contact_emails").select("contact_id, email, is_default"));
+      if (em.error) throw em.error;
+      const mailsOf = {};
+      for (const m of em.data || []) (mailsOf[m.contact_id] = mailsOf[m.contact_id] || []).push(m);
+      const byCo = {};
+      for (const p of ct.data || []) if (p.is_active) {
+        const ms = mailsOf[p.id] || [];
+        (byCo[p.company_id] = byCo[p.company_id] || []).push({
+          ...p, email: (ms.find(m => m.is_default) || ms[0] || {}).email || "", allMails: ms.map(m => m.email),
+        });
       }
-    })();
-    return () => { alive = false; };
-  }, []);
+      setRows((c.data || []).map(x => ({ ...x, contacts: byCo[x.id] || [] })));
+      setErr("");
+    } catch (e) {
+      setErr(e.message || "불러오기 실패"); setRows([]);
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function removeContact(p, coName) {
+    if (!confirm(`${coName} · ${p.name} 담당자를 삭제할까요?`)) return;
+    setBusyId(p.id);
+    const { error } = await sb().from("contacts")
+      .update({ is_active: false, is_primary: false, deleted_at: new Date().toISOString() }).eq("id", p.id);
+    setBusyId("");
+    if (error) { alert("삭제 실패: " + error.message); return; }
+    setRows(rs => rs.map(c => ({ ...c, contacts: c.contacts.filter(x => x.id !== p.id) })));
+  }
+
   if (rows === null) return <div className="card"><div className="empty">목록 불러오는 중… (최대 15초)</div></div>;
   if (err) return <div className="card"><div className="msg err">목록 오류: {err}</div></div>;
-  if (!rows.length) return <div className="card"><div className="empty">아직 등록된 업체가 없습니다.</div></div>;
+
+  const key = q.trim().toLowerCase().replace(/[\s-]/g, "");
+  const match = v => (v || "").toLowerCase().replace(/[\s-]/g, "").includes(key);
+  const shown = !key ? rows : rows
+    .map(c => {
+      if (match(c.name)) return c;
+      const hit = c.contacts.filter(p => match(p.name) || match(p.phone) || match(p.title) || match(p.dept) || p.allMails.some(match));
+      return hit.length ? { ...c, contacts: hit } : null;
+    })
+    .filter(Boolean);
+
   return (
     <div className="card">
-      <h2>등록된 업체 ({rows.length})</h2>
-      {rows.map(c => (
-        <div className="item" key={c.id}>
-          <div className="nm">{c.name}</div>
-          {c.contacts.map(p => (
-            <div className="de" key={p.id}>
-              {[p.name, p.title, p.phone, p.email].filter(Boolean).join(" · ")}
-            </div>
-          ))}
-        </div>
-      ))}
+      <h2>등록된 업체 ({rows.length}) <span className="conf">v11</span></h2>
+      <input placeholder="업체명, 담당자 이름, 전화번호, 메일로 검색" value={q} onChange={e => setQ(e.target.value)} />
+      {!rows.length && <div className="empty">아직 등록된 업체가 없습니다.</div>}
+      {rows.length > 0 && !shown.length && <div className="empty">검색 결과가 없습니다.</div>}
+      <div style={{ marginTop: 12 }}>
+        {shown.map(c => (
+          <div className="item" key={c.id}>
+            <div className="nm">{c.name}</div>
+            {c.contacts.length === 0 && <div className="de">등록된 담당자 없음</div>}
+            {c.contacts.map(p => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                <div className="de" style={{ flex: 1, marginTop: 0 }}>
+                  {[p.name, p.title, p.phone, p.email].filter(Boolean).join(" · ")}
+                </div>
+                <button className="btn sm danger" disabled={busyId === p.id} onClick={() => removeContact(p, c.name)}>삭제</button>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

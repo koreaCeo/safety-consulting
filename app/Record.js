@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import VisitTools from "./VisitTools";
 
 const STAGES = [["DIAG", "수준진단"], ["I", "I단계"], ["S", "S단계"], ["P", "P단계"]];
 const ROUNDS = { DIAG: [0], I: [1, 2], S: [3], P: [4, 5] };
@@ -79,6 +80,7 @@ export default function Record({ sb }) {
       const { data } = await sb.from("companies").select("id, name").is("deleted_at", null).order("name");
       setCompanies(data || []);
       setPending((await idbAll()).length);
+      cleanupOldAudio();
     })();
     const on = () => uploadPending();
     window.addEventListener("online", on);
@@ -87,6 +89,19 @@ export default function Record({ sb }) {
   }, []);
 
   useEffect(() => { setRound(ROUNDS[stage][0]); if (stage === "DIAG" || stage === "S") setLoc(stage === "S" ? "HQ" : loc); }, [stage]); // eslint-disable-line
+
+  /* ---------- 변환 끝난 녹음 원본 30일 후 자동 삭제 (스크립트는 유지) ---------- */
+  async function cleanupOldAudio() {
+    try {
+      const before = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+      const { data } = await sb.from("recordings").select("id, storage_path")
+        .eq("transcript_status", "done").not("storage_path", "is", null).lt("created_at", before).limit(200);
+      const list = (data || []).filter(r => r.storage_path);
+      if (!list.length) return;
+      await sb.storage.from("recordings").remove(list.map(r => r.storage_path));
+      await sb.from("recordings").update({ storage_path: null }).in("id", list.map(r => r.id));
+    } catch {}
+  }
 
   /* ---------- 방문 회차 열기 ---------- */
   async function openVisit() {
@@ -302,12 +317,17 @@ export default function Record({ sb }) {
         <div className="actions">
           <button className="btn primary" onClick={openVisit} disabled={busy === "visit" || recording}>이 회차 열기</button>
         </div>
+        {visit && (
+          <VisitTools key={visit.id + visit.stage + visit.round_no + visit.location_type} sb={sb} visit={visit} disabled={recording}
+            onChanged={v => { setVisit(v); visitRef.current = v; }}
+            onDeleted={() => { setVisit(null); visitRef.current = null; setRows([]); }} />
+        )}
         {msg && <div className={"msg " + msg.t}>{msg.s}</div>}
       </div>
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음 <span className="conf">v8</span></h2>
+          <h2>2. 회의 녹음 <span className="conf">v11</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording

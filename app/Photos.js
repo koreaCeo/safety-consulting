@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import VisitTools from "./VisitTools";
 
 const STAGES = [["DIAG", "수준진단"], ["I", "I단계"], ["S", "S단계"], ["P", "P단계"]];
 const ROUNDS = { DIAG: [0], I: [1, 2], S: [3], P: [4, 5] };
@@ -216,7 +217,7 @@ export default function Photos({ sb }) {
       )}
 
       <div className="card">
-        <h2>1. 방문 회차 선택 <span className="conf">v10</span></h2>
+        <h2>1. 방문 회차 선택 <span className="conf">v11</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setVisit(null); }}>
           <option value="">— 업체 선택 —</option>
@@ -244,6 +245,16 @@ export default function Photos({ sb }) {
         <div className="actions">
           <button className="btn primary" onClick={openVisit} disabled={busy === "visit"}>이 회차 열기</button>
         </div>
+        {visit && (
+          <VisitTools key={visit.id + visit.stage + visit.round_no + visit.location_type} sb={sb} visit={visit}
+            onChanged={async v => {
+              setVisit(v); visitRef.current = v;
+              const { data: rs } = await sb.from("photo_rules").select("*").eq("stage", v.stage).in("location_type", [v.location_type, "ANY"]).order("sort_order");
+              setRules(rs || []);
+              await loadPhotos(v.id);
+            }}
+            onDeleted={() => { setVisit(null); visitRef.current = null; setPhotos([]); setRules([]); }} />
+        )}
         {msg && !visit && <div className={"msg " + msg.t}>{msg.s}</div>}
       </div>
 
