@@ -216,7 +216,7 @@ export default function Photos({ sb }) {
       )}
 
       <div className="card">
-        <h2>1. 방문 회차 선택 <span className="conf">v6</span></h2>
+        <h2>1. 방문 회차 선택 <span className="conf">v9</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setVisit(null); }}>
           <option value="">— 업체 선택 —</option>
@@ -293,6 +293,17 @@ export default function Photos({ sb }) {
             })}
           </div>
 
+          {photos.some(p => p.category === "finding") && (
+            <div className="card">
+              <h2>지적사항 작성</h2>
+              <div className="conf">전문가 의견을 키워드로 적고 "분석"을 누르면 위험요인·개선대책·근거조항 초안이 만들어집니다. 수정 후 저장하세요.</div>
+              {photos.filter(p => p.category === "finding").map(p => (
+                <FindingItem key={p.id} sb={sb} photo={p} thumb={urls[p.storage_path]}
+                  onSaved={upd => setPhotos(list => list.map(x => x.id === p.id ? { ...x, ...upd } : x))} />
+              ))}
+            </div>
+          )}
+
           <div className="card">
             <h2>3. 방문 종료</h2>
             <div className="conf">현장을 떠나기 전에 누르세요. 부족한 사진이 있으면 알려드립니다.</div>
@@ -316,5 +327,71 @@ export default function Photos({ sb }) {
         </div>
       )}
     </>
+  );
+}
+
+function FindingItem({ sb, photo, thumb, onSaved }) {
+  const [note, setNote] = useState(photo.expert_note || "");
+  const [risk, setRisk] = useState(photo.risk_text || "");
+  const [measures, setMeasures] = useState(photo.measures_text || "");
+  const [legal, setLegal] = useState(photo.legal_text || "");
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  async function analyze() {
+    if (!note.trim()) { setMsg({ t: "err", s: "전문가 의견을 먼저 적어주세요." }); return; }
+    setBusy("ai"); setMsg({ t: "info", s: "분석 중입니다… (10~20초)" });
+    try {
+      const { data: s } = await sb.storage.from("photos").createSignedUrl(photo.storage_path, 600);
+      const { data: ss } = await sb.auth.getSession();
+      const r = await fetch("/api/finding", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + (ss.session?.access_token || "") },
+        body: JSON.stringify({ url: s.signedUrl, note }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "분석 실패");
+      setRisk(d.risk || "");
+      setMeasures((d.measures || []).map((m, i) => `${i + 1}. ${m.replace(/^\d+[.)]\s*/, "")}`).join("\n"));
+      setLegal(d.laws && d.laws.length ? d.laws.join("\n") : "근거조항 확인 필요");
+      setMsg({ t: "info", s: "초안을 만들었습니다. 확인·수정 후 저장하세요." });
+    } catch (e) {
+      setMsg({ t: "err", s: e.message || "분석 실패" });
+    } finally { setBusy(""); }
+  }
+
+  async function save() {
+    setBusy("save");
+    const upd = { expert_note: note, risk_text: risk, measures_text: measures, legal_text: legal };
+    const { error } = await sb.from("photos").update(upd).eq("id", photo.id);
+    if (error) setMsg({ t: "err", s: "저장 실패: " + error.message });
+    else { setMsg({ t: "info", s: "저장했습니다." }); onSaved(upd); }
+    setBusy("");
+  }
+
+  return (
+    <div className="item" style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+        {thumb && <img src={thumb} alt={photo.file_name} style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, border: "1px solid var(--line)" }} />}
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div className="de">{photo.file_name}</div>
+          <label>전문가 의견</label>
+          <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="예: 가설 전기 불량으로 감전 및 화재발생 위험" style={{ minHeight: 52 }} />
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button className="btn primary sm" onClick={analyze} disabled={!!busy}>분석</button>
+          </div>
+        </div>
+      </div>
+      <label>위험요인</label>
+      <textarea value={risk} onChange={e => setRisk(e.target.value)} />
+      <label>개선대책</label>
+      <textarea value={measures} onChange={e => setMeasures(e.target.value)} style={{ minHeight: 96 }} />
+      <label>근거조항</label>
+      <textarea value={legal} onChange={e => setLegal(e.target.value)} />
+      <div className="actions" style={{ marginTop: 8 }}>
+        <button className="btn sm" onClick={save} disabled={!!busy}>저장</button>
+      </div>
+      {msg && <div className={"msg " + msg.t}>{msg.s}</div>}
+    </div>
   );
 }
