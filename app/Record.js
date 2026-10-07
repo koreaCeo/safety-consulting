@@ -54,7 +54,6 @@ export default function Record({ sb }) {
   const [stage, setStage] = useState("DIAG");
   const [round, setRound] = useState(0);
   const [loc, setLoc] = useState("HQ");
-  const [siteName, setSiteName] = useState("");
   const [visit, setVisit] = useState(null);
   const [msg, setMsg] = useState(null);
 
@@ -106,20 +105,9 @@ export default function Record({ sb }) {
   /* ---------- 방문 회차 열기 ---------- */
   async function openVisit() {
     if (!companyId) { setMsg({ t: "err", s: "업체를 선택하세요." }); return; }
-    if (loc === "SITE" && !siteName.trim()) { setMsg({ t: "err", s: "현장명을 입력하세요." }); return; }
     setBusy("visit"); setMsg(null);
     try {
-      let siteId = null;
-      if (loc === "SITE") {
-        const { data: cur } = await sb.from("sites").select("id, name").eq("company_id", companyId).eq("is_current", true).is("deleted_at", null).limit(1);
-        if (cur?.[0] && cur[0].name === siteName.trim()) siteId = cur[0].id;
-        else {
-          if (cur?.[0]) await sb.from("sites").update({ is_current: false }).eq("id", cur[0].id);
-          const { data, error } = await sb.from("sites").insert({ company_id: companyId, name: siteName.trim(), is_current: true }).select("id").single();
-          if (error) throw error;
-          siteId = data.id;
-        }
-      }
+      const siteId = null;
       let { data: v } = await sb.from("visits").select("*").eq("company_id", companyId).eq("stage", stage).eq("round_no", round).is("deleted_at", null).limit(1);
       let vv = v?.[0];
       if (!vv) {
@@ -313,7 +301,6 @@ export default function Record({ sb }) {
             </select>
           </div>
         </div>
-        {loc === "SITE" && (<><label>현장명</label><input value={siteName} onChange={e => setSiteName(e.target.value)} disabled={recording} /></>)}
         <div className="actions">
           <button className="btn primary" onClick={openVisit} disabled={busy === "visit" || recording}>이 회차 열기</button>
         </div>
@@ -327,7 +314,7 @@ export default function Record({ sb }) {
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음 <span className="conf">v11</span></h2>
+          <h2>2. 회의 녹음 <span className="conf">v17</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording
@@ -343,6 +330,9 @@ export default function Record({ sb }) {
               {rows.map(r => (
                 <div className="item" key={r.id}>
                   <div className="nm">{r.local_path || "녹음 구간 " + r.seq}{r.duration_sec ? " · " + fmt(r.duration_sec) : ""} · {r.storage_path ? STATUS[r.transcript_status] : "텍스트"}</div>
+                  {r.transcript_status === "processing" && Date.now() - new Date(r.updated_at || r.created_at).getTime() > 120000 && (
+                    <div className="de">변환이 멈춘 것 같습니다. <button className="btn sm" onClick={() => transcribe(r)}>다시 변환</button></div>
+                  )}
                   {r.transcript_status === "failed" && (
                     <div className="de">{r.error_message} <button className="btn sm" onClick={() => transcribe(r)}>다시 변환</button></div>
                   )}

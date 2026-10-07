@@ -17,36 +17,18 @@ export default function VisitTools({ sb, visit, onChanged, onDeleted, disabled }
   const [stage, setStage] = useState(visit.stage);
   const [round, setRound] = useState(visit.round_no);
   const [loc, setLoc] = useState(visit.location_type);
-  const [siteName, setSiteName] = useState("");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
   async function startEdit() {
     setStage(visit.stage); setRound(visit.round_no); setLoc(visit.location_type); setMsg(null);
-    if (visit.site_id) {
-      const { data } = await sb.from("sites").select("name").eq("id", visit.site_id).single();
-      setSiteName(data?.name || "");
-    } else setSiteName("");
     setOpen(true);
   }
 
   async function save() {
-    if (loc === "SITE" && !siteName.trim()) { setMsg({ t: "err", s: "현장명을 입력하세요." }); return; }
     setBusy(true); setMsg(null);
     try {
-      let siteId = null;
-      if (loc === "SITE") {
-        const { data: cur } = await sb.from("sites").select("id, name").eq("company_id", visit.company_id)
-          .eq("is_current", true).is("deleted_at", null).limit(1);
-        if (cur?.[0] && cur[0].name === siteName.trim()) siteId = cur[0].id;
-        else {
-          if (cur?.[0]) await sb.from("sites").update({ is_current: false }).eq("id", cur[0].id);
-          const { data, error } = await sb.from("sites")
-            .insert({ company_id: visit.company_id, name: siteName.trim(), is_current: true }).select("id").single();
-          if (error) throw error;
-          siteId = data.id;
-        }
-      }
+      const siteId = null;
       const { data, error } = await sb.from("visits")
         .update({ stage, round_no: round, location_type: loc, site_id: siteId })
         .eq("id", visit.id).select("*").single();
@@ -117,7 +99,6 @@ export default function VisitTools({ sb, visit, onChanged, onDeleted, disabled }
           </select>
         </div>
       </div>
-      {loc === "SITE" && (<><label>현장명</label><input value={siteName} onChange={e => setSiteName(e.target.value)} /></>)}
       <div className="actions">
         <button className="btn primary sm" onClick={save} disabled={busy}>저장</button>
         <button className="btn sm" onClick={() => setOpen(false)} disabled={busy}>취소</button>

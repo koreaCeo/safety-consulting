@@ -44,7 +44,6 @@ export default function Photos({ sb }) {
   const [stage, setStage] = useState("DIAG");
   const [round, setRound] = useState(0);
   const [loc, setLoc] = useState("HQ");
-  const [siteName, setSiteName] = useState("");
   const [visit, setVisit] = useState(null);
   const [rules, setRules] = useState([]);
   const [photos, setPhotos] = useState([]);
@@ -74,20 +73,9 @@ export default function Photos({ sb }) {
   /* ---------- 회차 열기 ---------- */
   async function openVisit() {
     if (!companyId) { setMsg({ t: "err", s: "업체를 선택하세요." }); return; }
-    if (loc === "SITE" && !siteName.trim()) { setMsg({ t: "err", s: "현장명을 입력하세요." }); return; }
     setBusy("visit"); setMsg(null);
     try {
-      let siteId = null;
-      if (loc === "SITE") {
-        const { data: cur } = await sb.from("sites").select("id, name").eq("company_id", companyId).eq("is_current", true).is("deleted_at", null).limit(1);
-        if (cur?.[0] && cur[0].name === siteName.trim()) siteId = cur[0].id;
-        else {
-          if (cur?.[0]) await sb.from("sites").update({ is_current: false }).eq("id", cur[0].id);
-          const { data, error } = await sb.from("sites").insert({ company_id: companyId, name: siteName.trim(), is_current: true }).select("id").single();
-          if (error) throw error;
-          siteId = data.id;
-        }
-      }
+      const siteId = null;
       const { data: v } = await sb.from("visits").select("*").eq("company_id", companyId).eq("stage", stage).eq("round_no", round).is("deleted_at", null).limit(1);
       let vv = v?.[0];
       if (!vv) {
@@ -220,7 +208,7 @@ export default function Photos({ sb }) {
       )}
 
       <div className="card">
-        <h2>1. 방문 회차 선택 <span className="conf">v13</span></h2>
+        <h2>1. 방문 회차 선택 <span className="conf">v17</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setVisit(null); }}>
           <option value="">— 업체 선택 —</option>
@@ -244,7 +232,6 @@ export default function Photos({ sb }) {
             </select>
           </div>
         </div>
-        {loc === "SITE" && (<><label>현장명</label><input value={siteName} onChange={e => setSiteName(e.target.value)} /></>)}
         <div className="actions">
           <button className="btn primary" onClick={openVisit} disabled={busy === "visit"}>이 회차 열기</button>
         </div>
