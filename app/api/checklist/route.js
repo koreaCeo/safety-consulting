@@ -7,44 +7,104 @@ export const maxDuration = 300;
 
 const STAGE = { DIAG: "수준진단", I: "I단계", S: "S단계", P: "P단계" };
 
-function draftPrompt({ company, stage, transcript, prev, answers }) {
-  const list = ITEMS.map(it => `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 배점 ${it.max}`).join("\n");
-  const sample = SAMPLES.map(s => `[기준] ${s.crit}\n[현황 및 문제점]\n${s.i}\n[개선대책]\n${s.j}`).join("\n\n");
-  const prevRows = Object.entries(prev || {}).filter(([, v]) => v && (v.g || v.i || v.j));
-  const prevText = prevRows.length
-    ? prevRows.map(([r, v]) => `${r}\n현황: ${v.i || "-"}\n개선대책: ${v.j || "-"}`).join("\n\n")
-    : "";
+const EXCLUDE = new Set([4]); // A-1 사전의무교육: 작성·점검 대상 제외
+const WORK = ITEMS.filter(it => !EXCLUDE.has(it.r));
 
-  const ans = Array.isArray(answers) ? answers.filter(a => a && a.a && String(a.a).trim()) : [];
-  const ansText = ans.map(a => a.r ? `${a.r}행 | 질문: ${a.q} | 지도사 답: ${a.a}` : `회의록 확인 | 원문: "${a.quote}" | 질문: ${a.q} | 지도사 답: ${a.a}`).join("\n");
-  const unanswered = Array.isArray(answers) ? answers.filter(a => a && a.r && !(a.a && String(a.a).trim())).map(a => a.r) : [];
+// 행 높이에 따른 칸당 분량 (사장님 작성본 기준: 높이 150 = 2줄·90자)
+let _heights = null;
+async function rowHeights() {
+  if (_heights) return _heights;
+  const zip = await JSZip.loadAsync(Buffer.from(TEMPLATE_B64, "base64"));
+  const xml = await zip.file("xl/worksheets/sheet2.xml").async("string");
+  _heights = {};
+  for (const m of xml.matchAll(/<row r="(\d+)"[^>]*?ht="([\d.]+)"/g)) _heights[Number(m[1])] = Number(m[2]);
+  return _heights;
+}
+function budgetOf(h) {
+  const ht = h || 150;
+  return { lines: ht >= 230 ? 3 : 2, chars: Math.max(80, Math.round(90 * ht / 150)), perLine: 45 };
+}
+function overBudget(text, bud) {
+  const t = (text || "").trim(); if (!t) return false;
+  const ls = t.split("\n").filter(x => x.trim());
+  return ls.length > bud.lines || t.length > bud.chars || ls.some(l => l.length > bud.perLine + 5);
+}
+
+const STYLE_RULES = `[문체 규칙]
+1. 줄마다 "- 본사 : …" 또는 "- 현장 : …"으로 시작하는 짧은 명사형 문장. "본사/현장"은 실제로 둘 다 해당할 때만 쓴다. 현장 방문에서 들은 본사 일은 "본사"로 쓴다.
+2. [현황 및 문제점]에는 업체의 현재 상태만 사실대로 쓴다. 상태는 셋 중 하나로 판단한다.
+   - 잘 하고 있음 → "~ 운영 중", "~ 관리 중", "~ 게시 중", "~ 작성 완료"
+   - 하고 있으나 보완 필요 → "~ 운영 중이나 ~ 미흡"
+   - 하지 않음 → "~ 미수립", "~ 미실시", "~ 미운영"
+   잘 하고 있는 것을 미흡으로 바꾸지 않는다. "확인", "미확인", "권고 상태"처럼 지도사의 행동은 현황에 쓰지 않는다.
+3. [개선대책]에는 회의에서 지도사가 제안한 방법을 짧게 쓴다.
+   - 잘 하고 있으면 "- 현행 유지" 또는 "- 현행 유지, ~ 권고"
+   - 보완·미흡이면 무엇을 어떻게 할지 + 근거 남기는 방법(교육일지·TBM 일지 기록 등)
+4. 공식 문서 표현: "카카오톡"은 "SNS". 회의 중 사담·진행상황(메일 보냄 등)은 쓰지 않는다.
+5. 음성인식 원문이라 오탈자가 있으니 문맥으로 이해한다.
+
+[견본 — 이 길이와 어조를 따른다]
+현황: - 현장 : 노사협의체 결과물 도급사 플랫폼 및 현장 게시판 게시 중
+개선대책: - 현행 유지, 정기교육 시 결과 전달 및 교육일지 기록 권고
+
+현황: - 현장 : 도급사(현대건설) 모의훈련 참여 및 훈련결과보고서 수령·보관 관리 중
+개선대책: - 현장 : 현행 유지, 도급사 훈련 불참 시 약식 자체훈련 실시 및 결과보고서 작성
+
+현황: - 본사 : 경영책임자의 반기 안전보건관리체계 운영점검 미실시
+개선대책: - 본사 : 반기 1회 경영책임자 점검 실시 및 결과 피드백·개선조치`;
+
+function draftPrompt({ company, stage, transcript, prev, answers }, items, heights) {
+  const list = items.map(it => {
+    const bud = budgetOf(heights[it.r]);
+    return `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 장소: ${it.where} | 요구문서: ${it.docs || "-"} | 분량: 칸당 최대 ${bud.lines}줄·${bud.chars}자, 줄당 ${bud.perLine}자`;
+  }).join("\n");
+  const sample = SAMPLES.map(s => `[현황] ${s.i}\n[개선대책] ${s.j}`).join("\n\n");
+  const rowSet = new Set(items.map(it => String(it.r)));
+  const prevRows = Object.entries(prev || {}).filter(([r, v]) => rowSet.has(String(r)) && v && (v.i || v.j));
+  const prevText = prevRows.map(([r, v]) => `${r}\n현황: ${v.i || "-"}\n개선대책: ${v.j || "-"}`).join("\n\n");
+  const ans = (Array.isArray(answers) ? answers : []).filter(a => a && a.a && String(a.a).trim() && (!a.r || rowSet.has(String(a.r))));
+  const ansText = ans.map(a => a.r ? `${a.r}행 | 질문: ${a.q} | 지도사 답: ${a.a}` : `회의록 정정 | 원문: "${a.quote}" | 지도사 답: ${a.a}`).join("\n");
+
   return `당신은 건설업 안전보건관리체계 구축 컨설팅을 수행하는 산업안전지도사의 보조자입니다.
 업체: ${company || ""} / 단계: ${STAGE[stage] || stage}
-${ansText ? `\n[지도사 확인 답변 — 회의록보다 우선하는 근거. 회의록 오류 정정도 반영할 것]\n${ansText}\n` : ""}${unanswered.length ? `\n[확인되지 않은 기준 — 추측해서 채우지 말 것: ${[...new Set(unanswered)].join(", ")}행]\n` : ""}
-아래 "회의 스크립트"(본사·현장 방문 회의를 음성인식한 원문)를 근거로, 평가지표 체크리스트 각 세부기준의 [현황 및 문제점], [개선대책]을 작성합니다. 평가점수는 지도사가 직접 매기므로 작성하지 않습니다.
 
-작성 규칙:
-1. 회의 스크립트에 근거가 있는 기준만 작성한다. 근거가 없는 기준은 출력하지 않는다. 없는 내용을 지어내지 않는다.
-2. 문체는 아래 "문체 견본"을 그대로 따른다. 줄마다 "- 본사 : …" 또는 "- 현장 : …"(둘 다 해당하면 "- 본사/현장 : …")으로 시작하는 짧은 명사형 문장.
-3. 공식 문서 표현을 쓴다. "카카오톡"은 "SNS"로 쓰고, 회의 중 사담·진행상황(메일 보냄 등)은 쓰지 않는다.
-5. 음성인식 원문이라 오탈자가 있으니 문맥으로 이해한다.
-${prevText ? `6. 아래 "앞 단계 작성 내용"을 기준으로, 이번 회의에서 달라진 기준만 출력한다. 달라진 기준은 앞 단계 문장을 바탕으로 이번에 확인된 개선·변경 사항을 반영해 현황·개선대책을 다시 쓴다. 달라지지 않은 기준은 출력하지 않는다.` : ""}
+아래 회의록과 자료를 근거로, 아래 "세부기준" 각 행의 [현황 및 문제점](i)과 [개선대책](j)을 씁니다. 평가점수는 쓰지 않습니다.
+${ansText ? `\n[지도사 확인 답변 — 회의록보다 우선하는 근거]\n${ansText}\n` : ""}
+${STYLE_RULES}
 
-문체 견본:
+[작성 범위]
+- ${prevText ? "아래 \"앞 단계 작성 내용\"이 있는 행은 이번 회의에서 달라진 경우에만 출력한다(달라지지 않으면 출력하지 않음). 앞 단계 내용이 없는 행은 반드시 출력한다." : "세부기준의 모든 행을 빠짐없이 출력한다."}
+- 회의록·답변에 근거가 있으면 그 내용으로 쓰고 "nb": false.
+- 근거가 전혀 없으면 비워두지 말고, 평가기준·요구문서에 비추어 미이행 상태로 현황을 쓰고(예: "- 본사 : 경영책임자의 반기 안전보건관리체계 운영점검 미실시") 평가기준에 맞는 개선대책을 쓴 뒤 "nb": true로 표시한다.
+- 각 행의 "분량" 제한을 반드시 지킨다. 넘칠 것 같으면 핵심만 남긴다.
+
+[사장님 기존 작성 문장 참고]
 ${sample}
 
-세부기준 목록 (행번호 | 지표 | 기준 | 배점):
+세부기준 (행번호 | 지표 | 기준 | 장소 | 요구문서 | 분량):
 ${list}
-${prevText ? `\n앞 단계 작성 내용 (행번호 / 현황 / 개선대책):\n${prevText}\n` : ""}
-회의 스크립트:
+${prevText ? `\n앞 단계 작성 내용:\n${prevText}\n` : ""}
+회의록:
 ${(transcript || "").slice(0, 150000)}
 
 JSON 하나로만 답한다. 형식:
-{"rows":[{"r":5,"i":"- 본사 : …","j":"- 본사 : …"}]}`;
+{"rows":[{"r":5,"i":"- 본사 : …","j":"- 현행 유지","nb":false}]}`;
+}
+
+function shrinkPrompt(rows, heights) {
+  const list = rows.map(x => {
+    const bud = budgetOf(heights[x.r]);
+    return `${x.r} | 분량: 최대 ${bud.lines}줄·${bud.chars}자, 줄당 ${bud.perLine}자\n현황: ${x.i}\n개선대책: ${x.j}`;
+  }).join("\n\n");
+  return `다음 평가지표 문장들이 엑셀 칸에 들어가지 않습니다. 의미와 "- 본사 : / - 현장 :" 형식, 어조는 그대로 두고 각 행의 분량 제한 안으로 줄여주세요. 덜 중요한 수식어부터 줄이고, 줄 수가 넘치면 비슷한 줄을 합칩니다.
+
+${list}
+
+JSON 하나로만 답한다. 형식: {"rows":[{"r":5,"i":"…","j":"…"}]}`;
 }
 
 function reviewPrompt({ company, stage, visitLabel, location, transcript, prev, prep }) {
-  const rel = ITEMS.filter(it => location === "ALL" || it.where === "본사/현장" || it.where === location);
+  const rel = WORK.filter(it => location === "ALL" || it.where === "본사/현장" || it.where === location);
   const list = rel.map(it =>
     `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 평가방법: ${it.method} | 요구문서: ${it.docs || "-"}`).join("\n");
   const prevRows = Object.entries(prev || {}).filter(([, v]) => v && (v.i || v.j));
@@ -95,27 +155,62 @@ function esc(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-async function buildXlsx(rows) {
+// I·J열 칸 스타일을 "바탕 없음"과 "노란 바탕" 두 벌로 복제
+function prepareStyles(stylesXml) {
+  let xml = stylesXml;
+  // fills: 노란색 채우기 찾기(없으면 추가)
+  const fillsM = xml.match(/<fills count="(\d+)">([\s\S]*?)<\/fills>/);
+  const fills = fillsM[2].match(/<fill>[\s\S]*?<\/fill>|<fill\/>/g) || [];
+  let yellow = fills.findIndex(f => /patternType="solid"/.test(f) && /rgb="FFFFFF00"/i.test(f));
+  if (yellow < 0) {
+    yellow = fills.length;
+    const add = '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill>';
+    xml = xml.replace(fillsM[0], `<fills count="${fills.length + 1}">${fillsM[2]}${add}</fills>`);
+  }
+  const xfsM = xml.match(/<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/);
+  const xfs = xfsM[2].match(/<xf [^>]*?\/>|<xf [^>]*?>[\s\S]*?<\/xf>/g) || [];
+  const extra = [];
+  const cache = {};
+  const variant = (s, hl) => {
+    const k = s + ":" + (hl ? 1 : 0);
+    if (cache[k] != null) return cache[k];
+    const base = xfs[s]; if (!base) return s;
+    let x = base.replace(/\sfillId="\d+"/, "").replace(/\sapplyFill="\d"/, "");
+    x = x.replace(/^<xf /, `<xf fillId="${hl ? yellow : 0}" applyFill="1" `);
+    cache[k] = xfs.length + extra.length;
+    extra.push(x);
+    return cache[k];
+  };
+  const finish = () => xml.replace(xfsM[0], `<cellXfs count="${xfs.length + extra.length}">${xfsM[2]}${extra.join("")}</cellXfs>`);
+  return { variant, finish };
+}
+
+async function buildXlsx(rows, highlight) {
   const zip = await JSZip.loadAsync(Buffer.from(TEMPLATE_B64, "base64"));
   const path = "xl/worksheets/sheet2.xml";
   let xml = await zip.file(path).async("string");
-  const setCell = (ref, val, numeric) => {
+  const st = prepareStyles(await zip.file("xl/styles.xml").async("string"));
+  const hl = new Set((highlight || []).map(Number));
+  const setCell = (ref, row, val, numeric, colorize) => {
     const re = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>[\\s\\S]*?</c>)`);
     xml = xml.replace(re, (m, attrs) => {
-      const s = (attrs.match(/s="\d+"/) || [""])[0];
-      if (val === "" || val == null) return `<c r="${ref}" ${s}/>`;
-      if (numeric) return `<c r="${ref}" ${s}><v>${Number(val)}</v></c>`;
-      return `<c r="${ref}" ${s} t="inlineStr"><is><t xml:space="preserve">${esc(val)}</t></is></c>`;
+      let s = (attrs.match(/s="(\d+)"/) || [])[1];
+      if (colorize && s != null) s = String(st.variant(Number(s), hl.has(row)));
+      const sa = s != null ? `s="${s}"` : "";
+      if (val === "" || val == null) return `<c r="${ref}" ${sa}/>`;
+      if (numeric) return `<c r="${ref}" ${sa}><v>${Number(val)}</v></c>`;
+      return `<c r="${ref}" ${sa} t="inlineStr"><is><t xml:space="preserve">${esc(val)}</t></is></c>`;
     });
   };
   for (const it of ITEMS) {
     const v = rows?.[it.r] || {};
     const g = (v.g ?? "").toString().trim();
-    setCell(`G${it.r}`, g, g !== "" && !isNaN(Number(g)));
-    setCell(`I${it.r}`, (v.i || "").trim(), false);
-    setCell(`J${it.r}`, (v.j || "").trim(), false);
+    setCell(`G${it.r}`, it.r, g, g !== "" && !isNaN(Number(g)), false);
+    setCell(`I${it.r}`, it.r, (v.i || "").trim(), false, true);
+    setCell(`J${it.r}`, it.r, (v.j || "").trim(), false, true);
   }
   zip.file(path, xml);
+  zip.file("xl/styles.xml", st.finish());
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
@@ -124,7 +219,7 @@ export async function POST(req) {
   const body = await req.json().catch(() => ({}));
 
   if (body.action === "export") {
-    const buf = await buildXlsx(body.rows || {});
+    const buf = await buildXlsx(body.rows || {}, (body.stage === "S" || body.stage === "P") ? body.highlight : []);
     const name = `${body.company || "업체"}_${STAGE[body.stage] || ""}_평가지표.xlsx`;
     return new Response(buf, {
       headers: {
@@ -155,29 +250,34 @@ export async function POST(req) {
     const key = process.env.ANTHROPIC_API_KEY;
     if (!key) return Response.json({ error: "ANTHROPIC_API_KEY 가 설정되지 않았습니다." }, { status: 500 });
     if (!body.transcript || !body.transcript.trim()) return Response.json({ error: "회의 스크립트가 없습니다." }, { status: 400 });
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 16000,
-        messages: [{ role: "user", content: draftPrompt(body) }],
-      }),
-    });
-    if (!r.ok) return Response.json({ error: "AI 서버 오류", detail: (await r.text()).slice(0, 300) }, { status: 502 });
-    const d = await r.json();
-    const text = (d.content || []).filter(c => c.type === "text").map(c => c.text).join("\n");
-    const m = text.match(/\{[\s\S]*\}/);
-    let out;
-    try { out = JSON.parse(m[0]); } catch { return Response.json({ error: "AI 결과를 해석하지 못했습니다." }, { status: 502 }); }
-    const valid = new Set(ITEMS.map(it => it.r));
+    const heights = await rowHeights();
+    // 뒤쪽 누락 방지: A~C / D~F 두 번에 나눠 작성
+    const groups = [WORK.filter(it => /^[ABC]/.test(it.ind)), WORK.filter(it => /^[DEF]/.test(it.ind))];
+    const results = await Promise.all(groups.map(g => askClaude(key, draftPrompt(body, g, heights), 12000)));
+    const err = results.find(x => x.error);
+    if (err) return Response.json(err, { status: 502 });
+    const valid = new Set(WORK.map(it => it.r));
     const rows = {};
-    for (const x of Array.isArray(out.rows) ? out.rows : []) {
+    for (const res of results) for (const x of (Array.isArray(res.json?.rows) ? res.json.rows : [])) {
       const rr = Number(x.r);
       if (!valid.has(rr)) continue;
-      rows[rr] = { i: String(x.i || "").trim(), j: String(x.j || "").trim() };
+      rows[rr] = { i: String(x.i || "").trim(), j: String(x.j || "").trim(), nb: !!x.nb };
     }
-    return Response.json({ rows });
+    // 분량 초과 칸만 한 번 더 줄이기
+    const over = Object.entries(rows).filter(([r, v]) => overBudget(v.i, budgetOf(heights[r])) || overBudget(v.j, budgetOf(heights[r])))
+      .map(([r, v]) => ({ r: Number(r), i: v.i, j: v.j }));
+    if (over.length) {
+      const sh = await askClaude(key, shrinkPrompt(over, heights), 6000);
+      for (const x of (Array.isArray(sh.json?.rows) ? sh.json.rows : [])) {
+        const rr = Number(x.r);
+        if (rows[rr]) { if (x.i) rows[rr].i = String(x.i).trim(); if (x.j) rows[rr].j = String(x.j).trim(); }
+      }
+    }
+    for (const [r, v] of Object.entries(rows)) {
+      const bud = budgetOf(heights[r]);
+      v.over = overBudget(v.i, bud) || overBudget(v.j, bud);
+    }
+    return Response.json({ rows, shrunk: over.length });
   }
 
   return Response.json({ error: "알 수 없는 요청" }, { status: 400 });
