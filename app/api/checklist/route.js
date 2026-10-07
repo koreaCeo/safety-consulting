@@ -2,6 +2,7 @@ import JSZip from "jszip";
 import { requireUser } from "../_auth";
 import { ITEMS, SAMPLES } from "./items";
 import { TEMPLATE_B64 } from "./template";
+import { checkFacts, CHECK_ADVICE } from "../../checkItems";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
@@ -53,10 +54,14 @@ const STYLE_RULES = `[문체 규칙]
 현황: - 본사 : 경영책임자의 반기 안전보건관리체계 운영점검 미실시
 개선대책: - 본사 : 반기 1회 경영책임자 점검 실시 및 결과 피드백·개선조치`;
 
-function draftPrompt({ company, stage, transcript, prev, answers }, items, heights) {
+function draftPrompt({ company, stage, transcript, prev, answers, checks }, items, heights) {
   const list = items.map(it => {
     const bud = budgetOf(heights[it.r]);
-    return `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 장소: ${it.where} | 요구문서: ${it.docs || "-"} | 분량: 칸당 최대 ${bud.lines}줄·${bud.chars}자, 줄당 ${bud.perLine}자`;
+    const facts = checks ? checkFacts(it.r, checks) : [];
+    const adv = CHECK_ADVICE[String(it.r)];
+    return `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 장소: ${it.where} | 분량: 칸당 최대 ${bud.lines}줄·${bud.chars}자, 줄당 ${bud.perLine}자`
+      + (facts.length ? `\n   [현장 체크] ${facts.join(" / ")}` : "")
+      + (adv ? `\n   [권고 예시] ${adv}` : "");
   }).join("\n");
   const sample = SAMPLES.map(s => `[현황] ${s.i}\n[개선대책] ${s.j}`).join("\n\n");
   const rowSet = new Set(items.map(it => String(it.r)));
@@ -71,6 +76,13 @@ function draftPrompt({ company, stage, transcript, prev, answers }, items, heigh
 아래 회의록과 자료를 근거로, 아래 "세부기준" 각 행의 [현황 및 문제점](i)과 [개선대책](j)을 씁니다. 평가점수는 쓰지 않습니다.
 ${ansText ? `\n[지도사 확인 답변 — 회의록보다 우선하는 근거]\n${ansText}\n` : ""}
 ${STYLE_RULES}
+
+[근거 우선순위]
+1) [현장 체크] — 지도사가 현장에서 직접 판정한 사실. 현황은 반드시 이것을 따른다: 적정 → "~ 운영 중/관리 중/작성 완료", 보완 → "~ 운영 중이나 ~ 미흡"(메모를 이유로 사용), 미수립 → "~ 미수립·미실시", 해당없음 → 언급하지 않음.
+2) 지도사 확인 답변
+3) 회의록
+개선대책은 [현장 체크]의 "권고 메모" → 회의록에서 지도사가 제안한 방법 → [권고 예시] 순으로 근거를 쓴다. 모두 적정이면 "- 현행 유지".
+[현장 체크]가 있는 행은 "nb": false.
 
 [작성 범위]
 - ${prevText ? "아래 \"앞 단계 작성 내용\"이 있는 행은 이번 회의에서 달라진 경우에만 출력한다(달라지지 않으면 출력하지 않음). 앞 단계 내용이 없는 행은 반드시 출력한다." : "세부기준의 모든 행을 빠짐없이 출력한다."}
@@ -249,7 +261,8 @@ export async function POST(req) {
   if (body.action === "draft") {
     const key = process.env.ANTHROPIC_API_KEY;
     if (!key) return Response.json({ error: "ANTHROPIC_API_KEY 가 설정되지 않았습니다." }, { status: 500 });
-    if (!body.transcript || !body.transcript.trim()) return Response.json({ error: "회의 스크립트가 없습니다." }, { status: 400 });
+    const hasChecks = body.checks && body.checks.s && Object.keys(body.checks.s).length > 0;
+    if ((!body.transcript || !body.transcript.trim()) && !hasChecks) return Response.json({ error: "회의록과 체크 결과가 모두 없습니다." }, { status: 400 });
     const heights = await rowHeights();
     // 뒤쪽 누락 방지: A~C / D~F 두 번에 나눠 작성
     const groups = [WORK.filter(it => /^[ABC]/.test(it.ind)), WORK.filter(it => /^[DEF]/.test(it.ind))];
