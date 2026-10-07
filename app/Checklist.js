@@ -18,6 +18,10 @@ export default function Checklist({ sb }) {
   const [transcript, setTranscript] = useState("");
   const [visitInfo, setVisitInfo] = useState("");
   const [visits, setVisits] = useState([]);
+  const [revVisit, setRevVisit] = useState("");
+  const [review, setReview] = useState(null);   // {ok, unclear, missing, issues}
+  const [answers, setAnswers] = useState({});   // key -> 답
+  const [showOk, setShowOk] = useState(false);
   const [onlyFilled, setOnlyFilled] = useState(false);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
@@ -58,9 +62,13 @@ export default function Checklist({ sb }) {
       setRows(m); setBaseFrom(from);
 
       // 3) 이 단계 회차들의 회의 스크립트 모으기
-      const { data: vs } = await sb.from("visits").select("id, round_no, location_type")
+      const { data: vs } = await sb.from("visits").select("id, round_no, location_type, review_json")
         .eq("company_id", companyId).eq("stage", stage).is("deleted_at", null).order("round_no");
       setVisits(vs || []);
+      const last = (vs || [])[(vs || []).length - 1];
+      setRevVisit(last?.id || "");
+      setReview(last?.review_json?.result || null);
+      setAnswers(last?.review_json?.answers || {});
       const ids = (vs || []).map(v => v.id);
       let text = "";
       if (ids.length) {
@@ -79,6 +87,68 @@ export default function Checklist({ sb }) {
     } finally { setBusy(""); }
   }
 
+  const vLabel = v => v ? `${STAGES.find(x => x[0] === stage)[1]} ${v.round_no ? v.round_no + "차 " : ""}${v.location_type === "HQ" ? "본사" : "현장"}` : "";
+  const keyOf = (kind, x, i) => kind === "issue" ? `issue:${i}` : `${kind}:${x.r}`;
+
+  function pickVisit(id) {
+    setRevVisit(id);
+    const v = visits.find(x => x.id === id);
+    setReview(v?.review_json?.result || null);
+    setAnswers(v?.review_json?.answers || {});
+  }
+
+  async function runReview() {
+    const v = visits.find(x => x.id === revVisit);
+    if (!v) { setMsg({ t: "err", s: "점검할 회차를 선택하세요." }); return; }
+    if (!transcript) { setMsg({ t: "err", s: "회의록이 없습니다. 회의 녹음 탭에서 녹음하거나 클로바노트 텍스트를 먼저 넣어주세요." }); return; }
+    setBusy("review"); setMsg({ t: "info", s: "회의록을 평가지표와 대조하는 중입니다… (30초~1분)" });
+    try {
+      const co = companies.find(c => c.id === companyId)?.name;
+      const { data: cinfo } = await sb.from("companies").select("prep_note").eq("id", companyId).single();
+      const r = await fetch("/api/checklist", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
+        body: JSON.stringify({
+          action: "review", company: co, stage, visitLabel: vLabel(v),
+          location: v.location_type === "HQ" ? "본사" : "현장",
+          transcript, prev: rows, prep: cinfo?.prep_note || "",
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "점검 실패");
+      setReview(d); setAnswers({});
+      await sb.from("visits").update({ review_json: { result: d, answers: {} } }).eq("id", v.id);
+      setVisits(vs => vs.map(x => x.id === v.id ? { ...x, review_json: { result: d, answers: {} } } : x));
+      setMsg({ t: "info", s: `점검 완료 — 확인됨 ${d.ok.length} · 애매함 ${d.unclear.length} · 논의 안 됨 ${d.missing.length} · 회의록 확인 ${d.issues.length}` });
+    } catch (e) {
+      setMsg({ t: "err", s: e.message || "점검 실패" });
+    } finally { setBusy(""); }
+  }
+
+  async function saveAnswers() {
+    const v = visits.find(x => x.id === revVisit); if (!v) return;
+    setBusy("ans");
+    const rj = { result: review, answers };
+    const { error } = await sb.from("visits").update({ review_json: rj }).eq("id", v.id);
+    setBusy("");
+    if (error) { setMsg({ t: "err", s: "답변 저장 실패: " + error.message }); return; }
+    setVisits(vs => vs.map(x => x.id === v.id ? { ...x, review_json: rj } : x));
+    setMsg({ t: "info", s: "답변을 저장했습니다. 이제 AI 초안 만들기를 누르면 답변이 우선 반영됩니다." });
+  }
+
+  // 이 단계 모든 회차의 점검 답변을 초안용으로 모음
+  function collectAnswers() {
+    const out = [];
+    for (const v of visits) {
+      const rj = v.id === revVisit ? { result: review, answers } : v.review_json;
+      if (!rj?.result) continue;
+      const res = rj.result, an = rj.answers || {};
+      for (const k of ["unclear", "missing"]) for (const x of res[k] || []) out.push({ r: x.r, q: x.q, a: an[keyOf(k, x)] || "" });
+      (res.issues || []).forEach((x, i) => out.push({ quote: x.quote, q: x.q, a: an[keyOf("issue", x, i)] || "" }));
+    }
+    return out;
+  }
+
   async function draft() {
     if (!transcript) { setMsg({ t: "err", s: "이 단계의 회의 스크립트가 없습니다. 회의 녹음 탭에서 먼저 녹음하거나 회의록을 올려주세요." }); return; }
     setBusy("ai"); setMsg({ t: "info", s: "초안 작성 중입니다… (1~3분 걸립니다. 창을 닫지 마세요)" });
@@ -87,7 +157,7 @@ export default function Checklist({ sb }) {
       const r = await fetch("/api/checklist", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
-        body: JSON.stringify({ action: "draft", company: co, stage, transcript, prev: INHERIT[stage] ? rows : {} }),
+        body: JSON.stringify({ action: "draft", company: co, stage, transcript, prev: INHERIT[stage] ? rows : {}, answers: collectAnswers() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "초안 실패");
@@ -213,7 +283,7 @@ export default function Checklist({ sb }) {
   return (
     <>
       <div className="card">
-        <h2>평가지표 체크리스트 <span className="conf">v15</span></h2>
+        <h2>평가지표 체크리스트 <span className="conf">v18</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setLoaded(false); }}>
           <option value="">— 업체 선택 —</option>
@@ -231,6 +301,70 @@ export default function Checklist({ sb }) {
 
       {loaded && (
         <div className="card">
+          <h2>1. 빠진 항목 점검 <span className="conf">현장 떠나기 전</span></h2>
+          <div className="conf" style={{ marginTop: 0 }}>회의록을 평가지표 기준·요구문서와 대조해 애매하거나 논의 안 된 항목, 알아듣기 어려운 회의록 부분을 찾습니다. 답을 짧게 적으면 초안에 우선 반영됩니다.</div>
+          <div className="row" style={{ alignItems: "flex-end" }}>
+            <div>
+              <label>이번 방문</label>
+              <select value={revVisit} onChange={e => pickVisit(e.target.value)}>
+                {visits.map(v => <option key={v.id} value={v.id}>{vLabel(v)}{v.review_json?.result ? " (점검함)" : ""}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: "0 0 auto" }}>
+              <button className="btn primary" onClick={runReview} disabled={!!busy || !visits.length}>{review ? "다시 점검" : "점검하기"}</button>
+            </div>
+          </div>
+          {review && (
+            <div style={{ marginTop: 14 }}>
+              {[["missing", "논의 안 됨", review.missing], ["unclear", "애매함", review.unclear]].map(([k, title, arr]) => arr.length > 0 && (
+                <div key={k} style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 600 }}>{title} ({arr.length})</div>
+                  {arr.map(x => {
+                    const it = ITEMS.find(i => i.r === x.r);
+                    const kk = keyOf(k, x);
+                    return (
+                      <div className="item" key={kk} style={{ marginTop: 8 }}>
+                        <div className="conf" style={{ marginTop: 0 }}>{it?.ind} · {it?.method}</div>
+                        <div style={{ fontSize: 14, marginTop: 4 }}>{x.q}</div>
+                        <input style={{ marginTop: 6 }} placeholder="짧게 답 (예: 확인, 실행계획 미수립)" value={answers[kk] || ""}
+                          onChange={e => setAnswers(a => ({ ...a, [kk]: e.target.value }))} />
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+              {review.issues.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 600 }}>회의록 확인 필요 ({review.issues.length})</div>
+                  {review.issues.map((x, i) => {
+                    const kk = keyOf("issue", x, i);
+                    return (
+                      <div className="item" key={kk} style={{ marginTop: 8 }}>
+                        <div className="de" style={{ marginTop: 0 }}>원문: "{x.quote}"</div>
+                        {x.guess && <div className="conf">이해한 내용: {x.guess}</div>}
+                        <div style={{ fontSize: 14, marginTop: 4 }}>{x.q}</div>
+                        <input style={{ marginTop: 6 }} placeholder="맞으면 '맞음', 틀리면 바른 내용" value={answers[kk] || ""}
+                          onChange={e => setAnswers(a => ({ ...a, [kk]: e.target.value }))} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div style={{ marginTop: 12 }}>
+                <button className="btn sm" onClick={() => setShowOk(v => !v)}>확인됨 {review.ok.length}개 {showOk ? "접기" : "보기"}</button>
+                {showOk && <div className="de" style={{ marginTop: 6 }}>{review.ok.map(r => ITEMS.find(i => i.r === r)?.ind).filter((x, i, a) => a.indexOf(x) === i).join(" · ")}</div>}
+              </div>
+              <div className="actions">
+                <button className="btn primary" onClick={saveAnswers} disabled={!!busy}>답변 저장</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {loaded && (
+        <div className="card">
+          <h2>2. 평가지표 초안</h2>
           <div className="conf" style={{ marginTop: 0 }}>{visitInfo}</div>
           {baseFrom && <div className="msg warn">{baseFrom} 내용을 불러왔습니다. 이번 회의에서 달라진 부분만 AI가 고칩니다.</div>}
           <div className="actions">
