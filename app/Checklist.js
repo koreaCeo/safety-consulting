@@ -15,6 +15,8 @@ export default function Checklist({ sb }) {
   const [changed, setChanged] = useState({});
   const [loaded, setLoaded] = useState(false);
   const [baseFrom, setBaseFrom] = useState("");
+  const [prevStage, setPrevStage] = useState({});   // 바로 앞 단계 내용(S·P 변경 표시 기준)
+  const [flags, setFlags] = useState({});           // r -> {nb, over}
   const [transcript, setTranscript] = useState("");
   const [visitInfo, setVisitInfo] = useState("");
   const [visits, setVisits] = useState([]);
@@ -52,13 +54,16 @@ export default function Checklist({ sb }) {
       // 1) 저장된 이 단계 내용
       let m = await loadStageRows(stage);
       let from = "";
-      // 2) 비어 있고 S·P단계면 앞 단계 내용 이어받기
-      if (!Object.keys(m).length && INHERIT[stage]) {
+      // 2) S·P단계: 바로 앞 단계 내용(변경 표시 기준), 비어 있으면 이어받기
+      let pv = {};
+      if (INHERIT[stage]) {
         for (let k = ORDER.indexOf(stage) - 1; k >= 0; k--) {
           const pm = await loadStageRows(ORDER[k]);
-          if (Object.keys(pm).length) { m = pm; from = STAGES.find(s => s[0] === ORDER[k])[1]; break; }
+          if (Object.keys(pm).length) { pv = pm; from = STAGES.find(s => s[0] === ORDER[k])[1]; break; }
         }
+        if (!Object.keys(m).length) m = { ...pv }; else from = "";
       }
+      setPrevStage(pv); setFlags({});
       setRows(m); setBaseFrom(from);
 
       // 3) 이 단계 회차들의 회의 스크립트 모으기
@@ -167,8 +172,11 @@ export default function Checklist({ sb }) {
         for (const [k, v] of Object.entries(d.rows || {})) next[k] = { g: prev[k]?.g || "", i: v.i, j: v.j };
         return next;
       });
+      setFlags(Object.fromEntries(Object.entries(d.rows || {}).map(([k, v]) => [k, { nb: !!v.nb, over: !!v.over }])));
       setChanged(Object.fromEntries(Object.keys(d.rows || {}).map(k => [k, true])));
-      setMsg({ t: "info", s: `${n}개 기준에 초안을 넣었습니다(노란 표시). 확인·수정 후 저장하세요.` });
+      const nb = Object.values(d.rows || {}).filter(v => v.nb).length;
+      const ov = Object.values(d.rows || {}).filter(v => v.over).length;
+      setMsg({ t: "info", s: `${n}개 기준에 초안을 넣었습니다.${nb ? ` 근거 없음 ${nb}개(빨간 표시)는 꼭 확인하세요.` : ""}${ov ? ` 분량 초과 ${ov}개(주황 표시)는 줄여주세요.` : ""}` });
     } catch (e) {
       setMsg({ t: "err", s: e.message || "초안 실패" });
     } finally { setBusy(""); }
@@ -237,7 +245,7 @@ export default function Checklist({ sb }) {
       const r = await fetch("/api/checklist", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
-        body: JSON.stringify({ action: "export", company: co, stage, rows }),
+        body: JSON.stringify({ action: "export", company: co, stage, rows, highlight: changedRows() }),
       });
       if (r.ok) zip.file(`${co}_${stName}_평가지표.xlsx`, await r.blob());
 
@@ -254,6 +262,15 @@ export default function Checklist({ sb }) {
     } finally { setBusy(""); }
   }
 
+  // S·P단계: 앞 단계와 달라진 칸 (엑셀 노란 바탕)
+  function changedRows() {
+    if (!INHERIT[stage] || !Object.keys(prevStage).length) return [];
+    return ITEMS.map(it => it.r).filter(r => {
+      const a = rows[r] || {}, b = prevStage[r] || {};
+      return (a.i || "").trim() !== (b.i || "").trim() || (a.j || "").trim() !== (b.j || "").trim();
+    });
+  }
+
   async function download() {
     setBusy("xlsx"); setMsg(null);
     try {
@@ -261,7 +278,7 @@ export default function Checklist({ sb }) {
       const r = await fetch("/api/checklist", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
-        body: JSON.stringify({ action: "export", company: co, stage, rows }),
+        body: JSON.stringify({ action: "export", company: co, stage, rows, highlight: changedRows() }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "내려받기 실패");
       const blob = await r.blob();
@@ -283,7 +300,7 @@ export default function Checklist({ sb }) {
   return (
     <>
       <div className="card">
-        <h2>평가지표 체크리스트 <span className="conf">v18</span></h2>
+        <h2>평가지표 체크리스트 <span className="conf">v19</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setLoaded(false); }}>
           <option value="">— 업체 선택 —</option>
@@ -387,7 +404,11 @@ export default function Checklist({ sb }) {
               return (
                 <div key={it.r}>
                   {head && <div style={{ fontWeight: 600, marginTop: 18, fontSize: 15 }}>{it.ind}</div>}
-                  <div className="item" style={{ marginTop: 8, background: changed[it.r] ? "var(--warn-bg)" : undefined }}>
+                  <div className="item" style={{ marginTop: 8, borderColor: flags[it.r]?.nb ? "var(--danger)" : flags[it.r]?.over ? "var(--warn)" : undefined }}>
+                    {it.r === 4 && <div className="conf" style={{ marginTop: 0 }}>작성 제외 항목 (사전의무교육)</div>}
+                    {flags[it.r]?.nb && <div className="msg err" style={{ marginTop: 0, padding: "4px 8px" }}>근거 없음 — 회의록에 내용이 없어 평가기준으로 채웠습니다. 확인 후 수정하세요.</div>}
+                    {flags[it.r]?.over && <div className="msg warn" style={{ marginTop: 0, padding: "4px 8px" }}>분량 초과 — 엑셀 칸을 넘칠 수 있습니다.</div>}
+                    {INHERIT[stage] && changedRows().includes(it.r) && <div className="conf" style={{ marginTop: 0 }}>앞 단계에서 변경됨 (엑셀 노란 바탕)</div>}
                     <div className="de" style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{it.crit}</div>
                     <div className="row" style={{ alignItems: "flex-end" }}>
                       <div style={{ flex: "0 0 140px" }}>

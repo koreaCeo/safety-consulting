@@ -5,7 +5,7 @@ import Record from "./Record";
 import Photos from "./Photos";
 import Checklist from "./Checklist";
 
-const APP_VERSION = "v18";
+const APP_VERSION = "v19";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
