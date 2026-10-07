@@ -4,8 +4,9 @@ import { createClient } from "@supabase/supabase-js";
 import Record from "./Record";
 import Photos from "./Photos";
 import Checklist from "./Checklist";
+import Checks from "./Checks";
 
-const APP_VERSION = "v19";
+const APP_VERSION = "v20";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -120,9 +121,10 @@ function Main({ onLogout }) {
         <button className={"tab" + (tab === "list" ? " on" : "")} onClick={() => setTab("list")}>업체 목록</button>
         <button className={"tab" + (tab === "rec" ? " on" : "")} onClick={() => setTab("rec")}>회의 녹음</button>
         <button className={"tab" + (tab === "photo" ? " on" : "")} onClick={() => setTab("photo")}>현장 사진</button>
+        <button className={"tab" + (tab === "ck" ? " on" : "")} onClick={() => setTab("ck")}>체크리스트</button>
         <button className={"tab" + (tab === "check" ? " on" : "")} onClick={() => setTab("check")}>평가지표</button>
       </div>
-      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : tab === "rec" ? <Record sb={sb()} /> : tab === "photo" ? <Photos sb={sb()} /> : <Checklist sb={sb()} />}
+      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : tab === "rec" ? <Record sb={sb()} /> : tab === "photo" ? <Photos sb={sb()} /> : tab === "ck" ? <Checks sb={sb()} /> : <Checklist sb={sb()} />}
     </div>
   );
 }

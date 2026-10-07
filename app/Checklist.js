@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import JSZip from "jszip";
 import { ITEMS } from "./api/checklist/items";
+import { suggestScore } from "./checkItems";
 
 const STAGES = [["DIAG", "수준진단"], ["I", "I단계"], ["S", "S단계"], ["P", "P단계"]];
 const ORDER = ["DIAG", "I", "S", "P"];
@@ -17,6 +18,7 @@ export default function Checklist({ sb }) {
   const [baseFrom, setBaseFrom] = useState("");
   const [prevStage, setPrevStage] = useState({});   // 바로 앞 단계 내용(S·P 변경 표시 기준)
   const [flags, setFlags] = useState({});           // r -> {nb, over}
+  const [checks, setChecks] = useState(null);       // 현장 체크리스트 결과
   const [transcript, setTranscript] = useState("");
   const [visitInfo, setVisitInfo] = useState("");
   const [visits, setVisits] = useState([]);
@@ -64,6 +66,8 @@ export default function Checklist({ sb }) {
         if (!Object.keys(m).length) m = { ...pv }; else from = "";
       }
       setPrevStage(pv); setFlags({});
+      const { data: ck } = await sb.from("stage_checks").select("data").eq("company_id", companyId).eq("stage", stage).maybeSingle();
+      setChecks(ck?.data || null);
       setRows(m); setBaseFrom(from);
 
       // 3) 이 단계 회차들의 회의 스크립트 모으기
@@ -155,14 +159,14 @@ export default function Checklist({ sb }) {
   }
 
   async function draft() {
-    if (!transcript) { setMsg({ t: "err", s: "이 단계의 회의 스크립트가 없습니다. 회의 녹음 탭에서 먼저 녹음하거나 회의록을 올려주세요." }); return; }
+    if (!transcript && !checks) { setMsg({ t: "err", s: "이 단계의 회의록과 체크 결과가 없습니다. 체크리스트 탭에서 체크하거나 회의록을 먼저 넣어주세요." }); return; }
     setBusy("ai"); setMsg({ t: "info", s: "초안 작성 중입니다… (1~3분 걸립니다. 창을 닫지 마세요)" });
     try {
       const co = companies.find(c => c.id === companyId)?.name;
       const r = await fetch("/api/checklist", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
-        body: JSON.stringify({ action: "draft", company: co, stage, transcript, prev: INHERIT[stage] ? rows : {}, answers: collectAnswers() }),
+        body: JSON.stringify({ action: "draft", company: co, stage, transcript, prev: INHERIT[stage] ? rows : {}, answers: collectAnswers(), checks }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "초안 실패");
@@ -184,6 +188,20 @@ export default function Checklist({ sb }) {
 
   function edit(r, k, v) {
     setRows(prev => ({ ...prev, [r]: { ...(prev[r] || { g: "", i: "", j: "" }), [k]: v } }));
+  }
+
+  function fillScores() {
+    if (!checks) { setMsg({ t: "err", s: "이 단계의 체크 결과가 없습니다. 체크리스트 탭에서 먼저 체크하세요." }); return; }
+    let n = 0;
+    setRows(prev => {
+      const next = { ...prev };
+      for (const it of ITEMS) {
+        const sc = suggestScore(it.r, it.max, checks);
+        if (sc && sc.score != null) { next[it.r] = { ...(next[it.r] || { i: "", j: "" }), g: String(sc.score) }; n++; }
+      }
+      return next;
+    });
+    setMsg({ t: "info", s: `체크 결과로 점수를 채웠습니다. 보완·미수립은 0점으로 들어갔으니 확인 후 수정하세요. 저장을 눌러야 반영됩니다.` });
   }
 
   async function save() {
@@ -300,7 +318,7 @@ export default function Checklist({ sb }) {
   return (
     <>
       <div className="card">
-        <h2>평가지표 체크리스트 <span className="conf">v19</span></h2>
+        <h2>평가지표 체크리스트 <span className="conf">v20</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setLoaded(false); }}>
           <option value="">— 업체 선택 —</option>
@@ -382,10 +400,11 @@ export default function Checklist({ sb }) {
       {loaded && (
         <div className="card">
           <h2>2. 평가지표 초안</h2>
-          <div className="conf" style={{ marginTop: 0 }}>{visitInfo}</div>
+          <div className="conf" style={{ marginTop: 0 }}>{visitInfo}{checks ? ` · 현장 체크 ${Object.keys(checks.s || {}).length}개 반영` : " · 현장 체크 없음"}</div>
           {baseFrom && <div className="msg warn">{baseFrom} 내용을 불러왔습니다. 이번 회의에서 달라진 부분만 AI가 고칩니다.</div>}
           <div className="actions">
             <button className="btn primary" onClick={draft} disabled={!!busy}>AI 초안 만들기</button>
+            <button className="btn" onClick={fillScores} disabled={!!busy}>체크 결과로 점수 채우기</button>
             <button className="btn" onClick={save} disabled={!!busy}>저장</button>
             <button className="btn" onClick={download} disabled={!!busy}>엑셀 내려받기</button>
             <button className="btn" onClick={bundle} disabled={!!busy}>보고서 재료 내려받기</button>
