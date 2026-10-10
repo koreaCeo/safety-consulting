@@ -6,7 +6,7 @@ import Photos from "./Photos";
 import Checklist from "./Checklist";
 import Checks from "./Checks";
 
-const APP_VERSION = "v20";
+const APP_VERSION = "v21";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -107,6 +107,7 @@ function Login() {
 
 function Main({ onLogout }) {
   const [tab, setTab] = useState("scan");
+  const [recInfo, setRecInfo] = useState(null);
   return (
     <div className="wrap">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -124,7 +125,20 @@ function Main({ onLogout }) {
         <button className={"tab" + (tab === "ck" ? " on" : "")} onClick={() => setTab("ck")}>체크리스트</button>
         <button className={"tab" + (tab === "check" ? " on" : "")} onClick={() => setTab("check")}>평가지표</button>
       </div>
-      {tab === "scan" ? <Scan /> : tab === "list" ? <List /> : tab === "rec" ? <Record sb={sb()} /> : tab === "photo" ? <Photos sb={sb()} /> : tab === "ck" ? <Checks sb={sb()} /> : <Checklist sb={sb()} />}
+      {recInfo && tab !== "rec" && (
+        <button onClick={() => setTab("rec")}
+          style={{ display: "block", width: "100%", margin: "0 0 12px", padding: "10px 14px", border: "none", borderRadius: 8,
+                   background: "#a32d2d", color: "#fff", font: "inherit", fontWeight: 600, textAlign: "left", cursor: "pointer" }}>
+          ● 녹음 중 {String(Math.floor(recInfo.elapsed / 60)).padStart(2, "0")}:{String(recInfo.elapsed % 60).padStart(2, "0")} — 누르면 회의 녹음 화면으로
+        </button>
+      )}
+      {tab === "scan" && <Scan />}
+      {tab === "list" && <List />}
+      {/* 아래 탭들은 닫지 않고 숨기기만 함 (다른 탭에 있어도 녹음·자동저장 유지) */}
+      <div style={{ display: tab === "rec" ? "block" : "none" }}><Record sb={sb()} onStatus={setRecInfo} active={tab === "rec"} /></div>
+      <div style={{ display: tab === "photo" ? "block" : "none" }}><Photos sb={sb()} active={tab === "photo"} /></div>
+      <div style={{ display: tab === "ck" ? "block" : "none" }}><Checks sb={sb()} active={tab === "ck"} /></div>
+      <div style={{ display: tab === "check" ? "block" : "none" }}><Checklist sb={sb()} active={tab === "check"} /></div>
     </div>
   );
 }

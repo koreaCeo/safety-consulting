@@ -38,7 +38,7 @@ async function shrink(file, max = 1600) {
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-export default function Photos({ sb }) {
+export default function Photos({ sb, active }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("DIAG");
@@ -55,6 +55,12 @@ export default function Photos({ sb }) {
   const [prep, setPrep] = useState(null);
   const visitRef = useRef(null);
   const camRef = useRef(null), albRef = useRef(null), targetCat = useRef("");
+
+  // 탭이 다시 열릴 때 업체 목록 새로고침 (탭을 닫지 않는 구조라서)
+  useEffect(() => {
+    if (!active) return;
+    sb.from("companies").select("id, name").is("deleted_at", null).order("name").then(({ data }) => { if (data) setCompanies(data); });
+  }, [active]); // eslint-disable-line
 
   useEffect(() => {
     (async () => {

@@ -8,7 +8,7 @@ const ORDER = ["DIAG", "I", "S", "P"];
 const AREAS = ["A", "B", "C", "D", "E", "F"];
 const COLOR = { ok: "#1d6e56", part: "#b7791f", none: "#a32d2d", na: "#6b6b6b" };
 
-export default function Checks({ sb }) {
+export default function Checks({ sb, active }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("I");
@@ -21,6 +21,12 @@ export default function Checks({ sb }) {
   const [msg, setMsg] = useState(null);
   const timer = useRef(null);
   const latest = useRef(null);
+
+  // 탭이 다시 열릴 때 업체 목록 새로고침 (탭을 닫지 않는 구조라서)
+  useEffect(() => {
+    if (!active) return;
+    sb.from("companies").select("id, name").is("deleted_at", null).order("name").then(({ data }) => { if (data) setCompanies(data); });
+  }, [active]); // eslint-disable-line
 
   useEffect(() => {
     sb.from("companies").select("id, name").is("deleted_at", null).order("name").then(({ data }) => setCompanies(data || []));

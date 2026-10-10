@@ -48,7 +48,7 @@ function pickMime() {
   return "";
 }
 
-export default function Record({ sb }) {
+export default function Record({ sb, onStatus, active }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("DIAG");
@@ -73,6 +73,12 @@ export default function Record({ sb }) {
     const { data } = await sb.auth.getSession();
     return data.session?.access_token || "";
   }
+
+  // 탭이 다시 열릴 때 업체 목록 새로고침 (탭을 닫지 않는 구조라서)
+  useEffect(() => {
+    if (!active) return;
+    sb.from("companies").select("id, name").is("deleted_at", null).order("name").then(({ data }) => { if (data) setCompanies(data); });
+  }, [active]); // eslint-disable-line
 
   useEffect(() => {
     (async () => {
@@ -152,6 +158,19 @@ export default function Record({ sb }) {
     rec.start(5000);
     recRef.current = rec;
   }
+
+  // 다른 탭에서도 녹음 상태를 보이도록 상위 화면에 알림
+  useEffect(() => { onStatus?.(recording ? { elapsed } : null); }, [recording, elapsed]); // eslint-disable-line
+  // 화면이 가려졌다 돌아오면 화면 꺼짐 방지 다시 요청
+  useEffect(() => {
+    const again = async () => {
+      if (document.visibilityState === "visible" && recording) {
+        try { wakeRef.current = await navigator.wakeLock?.request("screen"); } catch {}
+      }
+    };
+    document.addEventListener("visibilitychange", again);
+    return () => document.removeEventListener("visibilitychange", again);
+  }, [recording]);
 
   async function startRec() {
     if (!visit) return;
@@ -314,7 +333,7 @@ export default function Record({ sb }) {
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음 <span className="conf">v17</span></h2>
+          <h2>2. 회의 녹음 <span className="conf">v21</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording
