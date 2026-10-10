@@ -5,8 +5,9 @@ import Record from "./Record";
 import Photos from "./Photos";
 import Checklist from "./Checklist";
 import Checks from "./Checks";
+import Progress from "./Progress";
 
-const APP_VERSION = "v21";
+const APP_VERSION = "v22";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -108,6 +109,9 @@ function Login() {
 function Main({ onLogout }) {
   const [tab, setTab] = useState("scan");
   const [recInfo, setRecInfo] = useState(null);
+  const [presets, setPresets] = useState({});
+  // 현황판에서 누른 업체·차수를 해당 탭에 넘기고 이동
+  const go = (t, p) => { setPresets(x => ({ ...x, [t]: { ...p, n: Date.now() } })); setTab(t); };
   return (
     <div className="wrap">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -133,12 +137,12 @@ function Main({ onLogout }) {
         </button>
       )}
       {tab === "scan" && <Scan />}
-      {tab === "list" && <List />}
+      {tab === "list" && <List onGo={go} />}
       {/* 아래 탭들은 닫지 않고 숨기기만 함 (다른 탭에 있어도 녹음·자동저장 유지) */}
-      <div style={{ display: tab === "rec" ? "block" : "none" }}><Record sb={sb()} onStatus={setRecInfo} active={tab === "rec"} /></div>
-      <div style={{ display: tab === "photo" ? "block" : "none" }}><Photos sb={sb()} active={tab === "photo"} /></div>
-      <div style={{ display: tab === "ck" ? "block" : "none" }}><Checks sb={sb()} active={tab === "ck"} /></div>
-      <div style={{ display: tab === "check" ? "block" : "none" }}><Checklist sb={sb()} active={tab === "check"} /></div>
+      <div style={{ display: tab === "rec" ? "block" : "none" }}><Record sb={sb()} onStatus={setRecInfo} active={tab === "rec"} preset={presets.rec} /></div>
+      <div style={{ display: tab === "photo" ? "block" : "none" }}><Photos sb={sb()} active={tab === "photo"} preset={presets.photo} /></div>
+      <div style={{ display: tab === "ck" ? "block" : "none" }}><Checks sb={sb()} active={tab === "ck"} preset={presets.ck} /></div>
+      <div style={{ display: tab === "check" ? "block" : "none" }}><Checklist sb={sb()} active={tab === "check"} preset={presets.check} /></div>
     </div>
   );
 }
@@ -342,7 +346,7 @@ function Scan() {
   );
 }
 
-function List() {
+function List({ onGo }) {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
@@ -378,7 +382,7 @@ function List() {
 
   if (sel) {
     const c = rows.find(x => x.id === sel);
-    if (c) return <CompanyDetail c={c} onBack={() => setSel(null)} onChanged={load} />;
+    if (c) return <CompanyDetail c={c} onBack={() => setSel(null)} onChanged={load} onGo={onGo} />;
   }
 
   const key = q.trim().toLowerCase().replace(/[\s-]/g, "");
@@ -410,7 +414,7 @@ function List() {
   );
 }
 
-function CompanyDetail({ c, onBack, onChanged }) {
+function CompanyDetail({ c, onBack, onChanged, onGo }) {
   const [edit, setEdit] = useState(false);
   const [busy, setBusy] = useState(false);
   const [drafts, setDrafts] = useState({});
@@ -473,6 +477,11 @@ function CompanyDetail({ c, onBack, onChanged }) {
         {!edit
           ? <button className="btn sm" onClick={startEdit}>편집</button>
           : <button className="btn sm" onClick={() => setEdit(false)} disabled={busy}>편집 취소</button>}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div className="nm" style={{ fontWeight: 600 }}>진행 현황</div>
+        <div style={{ marginTop: 8 }}><Progress sb={sb()} companyId={c.id} onGo={onGo} /></div>
       </div>
 
       <div style={{ marginTop: 14 }}>

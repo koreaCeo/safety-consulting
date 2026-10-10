@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { ITEMS } from "./api/checklist/items";
 import { suggestScore } from "./checkItems";
@@ -8,7 +8,7 @@ const STAGES = [["DIAG", "수준진단"], ["I", "I단계"], ["S", "S단계"], ["
 const ORDER = ["DIAG", "I", "S", "P"];
 const INHERIT = { S: true, P: true };
 
-export default function Checklist({ sb, active }) {
+export default function Checklist({ sb, active, preset }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("DIAG");
@@ -54,6 +54,19 @@ export default function Checklist({ sb, active }) {
     }
     return m;
   }
+
+  // 현황판에서 넘겨받은 업체·단계로 자동 열기
+  const pendingPreset = useRef(null);
+  useEffect(() => {
+    if (!preset) return;
+    if (companyId === preset.companyId && stage === preset.stage) { open(); return; }
+    pendingPreset.current = preset; setLoaded(false);
+    setCompanyId(preset.companyId); setStage(preset.stage);
+  }, [preset?.n]); // eslint-disable-line
+  useEffect(() => {
+    const p = pendingPreset.current;
+    if (p && companyId === p.companyId && stage === p.stage) { pendingPreset.current = null; open(); }
+  }, [companyId, stage]); // eslint-disable-line
 
   async function open() {
     if (!companyId) { setMsg({ t: "err", s: "업체를 선택하세요." }); return; }

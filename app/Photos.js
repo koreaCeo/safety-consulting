@@ -38,12 +38,14 @@ async function shrink(file, max = 1600) {
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-export default function Photos({ sb, active }) {
+export default function Photos({ sb, active, preset }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("DIAG");
   const [round, setRound] = useState(0);
   const [loc, setLoc] = useState("HQ");
+  const pendingPreset = useRef(null);
+  const skipRoundReset = useRef(false);
   const [visit, setVisit] = useState(null);
   const [rules, setRules] = useState([]);
   const [photos, setPhotos] = useState([]);
@@ -74,9 +76,24 @@ export default function Photos({ sb, active }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { setRound(ROUNDS[stage][0]); if (stage === "S") setLoc("HQ"); }, [stage]);
+  useEffect(() => { if (skipRoundReset.current) { skipRoundReset.current = false; return; } setRound(ROUNDS[stage][0]); if (stage === "S") setLoc("HQ"); }, [stage]); // eslint-disable-line
 
   /* ---------- 회차 열기 ---------- */
+  // 현황판에서 넘겨받은 업체·차수로 자동 열기
+  useEffect(() => {
+    if (!preset) return;
+    const same = companyId === preset.companyId && stage === preset.stage && round === preset.round && loc === preset.loc;
+    if (same) { openVisit(); return; }
+    pendingPreset.current = preset;
+    skipRoundReset.current = stage !== preset.stage;
+    setVisit(null);
+    setCompanyId(preset.companyId); setStage(preset.stage); setRound(preset.round); setLoc(preset.loc);
+  }, [preset?.n]); // eslint-disable-line
+  useEffect(() => {
+    const p = pendingPreset.current;
+    if (p && companyId === p.companyId && stage === p.stage && round === p.round && loc === p.loc) { pendingPreset.current = null; openVisit(); }
+  }, [companyId, stage, round, loc]); // eslint-disable-line
+
   async function openVisit() {
     if (!companyId) { setMsg({ t: "err", s: "업체를 선택하세요." }); return; }
     setBusy("visit"); setMsg(null);

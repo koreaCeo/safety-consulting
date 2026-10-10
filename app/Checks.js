@@ -8,7 +8,7 @@ const ORDER = ["DIAG", "I", "S", "P"];
 const AREAS = ["A", "B", "C", "D", "E", "F"];
 const COLOR = { ok: "#1d6e56", part: "#b7791f", none: "#a32d2d", na: "#6b6b6b" };
 
-export default function Checks({ sb, active }) {
+export default function Checks({ sb, active, preset }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("I");
@@ -36,6 +36,19 @@ export default function Checks({ sb, active }) {
     const { data: row } = await sb.from("stage_checks").select("data").eq("company_id", companyId).eq("stage", st).maybeSingle();
     return row?.data || null;
   }
+
+  // 현황판에서 넘겨받은 업체·단계로 자동 열기
+  const pendingPreset = useRef(null);
+  useEffect(() => {
+    if (!preset) return;
+    if (companyId === preset.companyId && stage === preset.stage) { open(); return; }
+    pendingPreset.current = preset; setData(null);
+    setCompanyId(preset.companyId); setStage(preset.stage);
+  }, [preset?.n]); // eslint-disable-line
+  useEffect(() => {
+    const p = pendingPreset.current;
+    if (p && companyId === p.companyId && stage === p.stage) { pendingPreset.current = null; open(); }
+  }, [companyId, stage]); // eslint-disable-line
 
   async function open() {
     if (!companyId) { setMsg({ t: "err", s: "업체를 선택하세요." }); return; }

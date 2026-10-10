@@ -48,12 +48,14 @@ function pickMime() {
   return "";
 }
 
-export default function Record({ sb, onStatus, active }) {
+export default function Record({ sb, onStatus, active, preset }) {
   const [companies, setCompanies] = useState([]);
   const [companyId, setCompanyId] = useState("");
   const [stage, setStage] = useState("DIAG");
   const [round, setRound] = useState(0);
   const [loc, setLoc] = useState("HQ");
+  const pendingPreset = useRef(null);
+  const skipRoundReset = useRef(false);
   const [visit, setVisit] = useState(null);
   const [msg, setMsg] = useState(null);
 
@@ -93,7 +95,7 @@ export default function Record({ sb, onStatus, active }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { setRound(ROUNDS[stage][0]); if (stage === "DIAG" || stage === "S") setLoc(stage === "S" ? "HQ" : loc); }, [stage]); // eslint-disable-line
+  useEffect(() => { if (skipRoundReset.current) { skipRoundReset.current = false; return; } setRound(ROUNDS[stage][0]); if (stage === "DIAG" || stage === "S") setLoc(stage === "S" ? "HQ" : loc); }, [stage]); // eslint-disable-line
 
   /* ---------- 변환 끝난 녹음 원본 30일 후 자동 삭제 (스크립트는 유지) ---------- */
   async function cleanupOldAudio() {
@@ -109,6 +111,22 @@ export default function Record({ sb, onStatus, active }) {
   }
 
   /* ---------- 방문 회차 열기 ---------- */
+  // 현황판에서 넘겨받은 업체·차수로 자동 열기
+  useEffect(() => {
+    if (!preset) return;
+    if (recording) { setMsg({ t: "err", s: "녹음 중에는 다른 회차로 바꿀 수 없습니다. 녹음을 먼저 종료하세요." }); return; }
+    const same = companyId === preset.companyId && stage === preset.stage && round === preset.round && loc === preset.loc;
+    if (same) { openVisit(); return; }
+    pendingPreset.current = preset;
+    skipRoundReset.current = stage !== preset.stage;
+    setVisit(null);
+    setCompanyId(preset.companyId); setStage(preset.stage); setRound(preset.round); setLoc(preset.loc);
+  }, [preset?.n]); // eslint-disable-line
+  useEffect(() => {
+    const p = pendingPreset.current;
+    if (p && companyId === p.companyId && stage === p.stage && round === p.round && loc === p.loc) { pendingPreset.current = null; openVisit(); }
+  }, [companyId, stage, round, loc]); // eslint-disable-line
+
   async function openVisit() {
     if (!companyId) { setMsg({ t: "err", s: "업체를 선택하세요." }); return; }
     setBusy("visit"); setMsg(null);
