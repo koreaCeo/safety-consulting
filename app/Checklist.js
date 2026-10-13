@@ -209,18 +209,74 @@ export default function Checklist({ sb, active, preset }) {
     setRows(prev => ({ ...prev, [r]: { ...(prev[r] || { g: "", i: "", j: "" }), [k]: v } }));
   }
 
-  function fillScores() {
-    if (!checks) { setMsg({ t: "err", s: "이 단계의 체크 결과가 없습니다. 체크리스트 탭에서 먼저 체크하세요." }); return; }
-    let n = 0;
-    setRows(prev => {
-      const next = { ...prev };
-      for (const it of ITEMS) {
-        const sc = suggestScore(it.r, it.max, checks);
-        if (sc && sc.score != null) { next[it.r] = { ...(next[it.r] || { i: "", j: "" }), g: String(sc.score) }; n++; }
+  // 단계별 목표 점수 범위 (사장님 기준)
+  const BAND = { I: [40, 60], S: [50, 70], P: [60, 85] };
+
+  async function fillScores() {
+    setBusy("score"); setMsg({ t: "info", s: "점수를 계산하는 중입니다…" });
+    try {
+      const work = ITEMS.filter(it => it.r !== 4 && !isNaN(Number(it.max)));
+      const g = {}, why = {};
+      // 1) 체크리스트 결과가 있으면 그걸로
+      for (const it of work) {
+        const sc = checks ? suggestScore(it.r, it.max, checks) : null;
+        if (sc && sc.score != null) { g[it.r] = sc.score; why[it.r] = "체크"; }
       }
-      return next;
-    });
-    setMsg({ t: "info", s: `체크 결과로 점수를 채웠습니다. 보완·미수립은 0점으로 들어갔으니 확인 후 수정하세요. 저장을 눌러야 반영됩니다.` });
+      // 2) 없으면 초안 현황 문장으로 AI 판정
+      const need = work.filter(it => g[it.r] == null && ((rows[it.r]?.i || "").trim())).map(it => it.r);
+      if (need.length) {
+        const r = await fetch("/api/checklist", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer " + (await token()) },
+          body: JSON.stringify({ action: "score", rows, only: need }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "점수 판정 실패");
+        for (const [k, v] of Object.entries(d.scores || {})) { g[k] = v; why[k] = "현황"; }
+      }
+      for (const it of work) if (g[it.r] == null) { g[it.r] = Number(rows[it.r]?.g) || 0; why[it.r] = "기존"; }
+
+      // 3) 합계를 단계 범위 안으로 맞춤
+      const before = work.reduce((n, it) => n + g[it.r], 0);
+      const band = BAND[stage];
+      const adj = {};
+      const txt = it => (rows[it.r]?.i || "");
+      const partial = it => /중이나|미흡|일부|부족|보완/.test(txt(it));
+      const missing = it => /미수립|미실시|미운영|없습니다|되어 있지 않/.test(txt(it));
+      let total = before;
+      // 단계(그룹)별로 순서대로: 앞 그룹을 다 채운 뒤에만 다음 그룹으로 넘어감
+      const step = (groups, dir, goal) => {
+        for (const grp of groups) {
+          let moved = true;
+          while (goal() && moved) {
+            moved = false;
+            for (const it of grp) {
+              if (!goal()) break;
+              const ok = dir > 0 ? g[it.r] < Number(it.max) : g[it.r] > 0;
+              if (ok) { g[it.r] += dir; adj[it.r] = (adj[it.r] || 0) + dir; total += dir; moved = true; }
+            }
+          }
+          if (!goal()) break;
+        }
+      };
+      const P = work.filter(it => partial(it)), M = work.filter(it => missing(it) && !partial(it)), N = work.filter(it => !partial(it) && !missing(it));
+      if (band && total < band[0]) step([P, N, M], +1, () => total < band[0]);
+      else if (band && total > band[1]) step([M, P, N], -1, () => total > band[1]);
+      setRows(prev => {
+        const next = { ...prev };
+        for (const it of work) next[it.r] = { ...(next[it.r] || { i: "", j: "" }), g: String(g[it.r]) };
+        return next;
+      });
+      setFlags(f => {
+        const n = { ...f };
+        for (const it of work) n[it.r] = { ...(n[it.r] || {}), adj: adj[it.r] || 0 };
+        return n;
+      });
+      const adjList = Object.entries(adj).map(([r, v]) => `${ITEMS.find(i => i.r === Number(r))?.ind.split(" ")[0]}(${r}행) ${v > 0 ? "+" : ""}${v}`);
+      setMsg({ t: "info", s: `점수를 채웠습니다. 합계 ${before}점${band ? ` → ${total}점 (${STAGES.find(x => x[0] === stage)[1]} 목표 ${band[0]}~${band[1]}점)` : ""}${adjList.length ? ` · 조정: ${adjList.join(", ")}` : ""}. 확인 후 저장하세요.` });
+    } catch (e) {
+      setMsg({ t: "err", s: e.message || "점수 채우기 실패" });
+    } finally { setBusy(""); }
   }
 
   async function save() {
@@ -337,7 +393,7 @@ export default function Checklist({ sb, active, preset }) {
   return (
     <>
       <div className="card">
-        <h2>평가지표 체크리스트 <span className="conf">v20</span></h2>
+        <h2>평가지표 체크리스트 <span className="conf">v23</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setLoaded(false); }}>
           <option value="">— 업체 선택 —</option>
@@ -377,11 +433,13 @@ export default function Checklist({ sb, active, preset }) {
                     const it = ITEMS.find(i => i.r === x.r);
                     const kk = keyOf(k, x);
                     return (
-                      <div className="item" key={kk} style={{ marginTop: 8 }}>
+                      <div className="item" key={kk} style={{ marginTop: 8, opacity: answers[kk] === "__EXCLUDE__" ? 0.45 : 1 }}>
                         <div className="conf" style={{ marginTop: 0 }}>{it?.ind} · {it?.method}</div>
                         <div style={{ fontSize: 14, marginTop: 4 }}>{x.q}</div>
-                        <input style={{ marginTop: 6 }} placeholder="짧게 답 (예: 확인, 실행계획 미수립)" value={answers[kk] || ""}
-                          onChange={e => setAnswers(a => ({ ...a, [kk]: e.target.value }))} />
+                        <div style={{ display: "flex", alignItems: "flex-start" }}><input style={{ marginTop: 6, flex: 1 }} placeholder="짧게 답 (예: 확인, 실행계획 미수립)" value={answers[kk] === "__EXCLUDE__" ? "" : (answers[kk] || "")} disabled={answers[kk] === "__EXCLUDE__"}
+                          onChange={e => setAnswers(a => ({ ...a, [kk]: e.target.value }))} /><button type="button" className="btn sm" style={{ marginTop: 6, marginLeft: 6 }}
+                          onClick={() => setAnswers(a => ({ ...a, [kk]: a[kk] === "__EXCLUDE__" ? "" : "__EXCLUDE__" }))}>
+                          {answers[kk] === "__EXCLUDE__" ? "제외 취소" : "제외"}</button></div>
                       </div>
                     );
                   })}
@@ -393,12 +451,14 @@ export default function Checklist({ sb, active, preset }) {
                   {review.issues.map((x, i) => {
                     const kk = keyOf("issue", x, i);
                     return (
-                      <div className="item" key={kk} style={{ marginTop: 8 }}>
+                      <div className="item" key={kk} style={{ marginTop: 8, opacity: answers[kk] === "__EXCLUDE__" ? 0.45 : 1 }}>
                         <div className="de" style={{ marginTop: 0 }}>원문: "{x.quote}"</div>
                         {x.guess && <div className="conf">이해한 내용: {x.guess}</div>}
                         <div style={{ fontSize: 14, marginTop: 4 }}>{x.q}</div>
-                        <input style={{ marginTop: 6 }} placeholder="맞으면 '맞음', 틀리면 바른 내용" value={answers[kk] || ""}
-                          onChange={e => setAnswers(a => ({ ...a, [kk]: e.target.value }))} />
+                        <div style={{ display: "flex", alignItems: "flex-start" }}><input style={{ marginTop: 6, flex: 1 }} placeholder="맞으면 '맞음', 틀리면 바른 내용" value={answers[kk] === "__EXCLUDE__" ? "" : (answers[kk] || "")} disabled={answers[kk] === "__EXCLUDE__"}
+                          onChange={e => setAnswers(a => ({ ...a, [kk]: e.target.value }))} /><button type="button" className="btn sm" style={{ marginTop: 6, marginLeft: 6 }}
+                          onClick={() => setAnswers(a => ({ ...a, [kk]: a[kk] === "__EXCLUDE__" ? "" : "__EXCLUDE__" }))}>
+                          {answers[kk] === "__EXCLUDE__" ? "제외 취소" : "제외"}</button></div>
                       </div>
                     );
                   })}
@@ -423,7 +483,7 @@ export default function Checklist({ sb, active, preset }) {
           {baseFrom && <div className="msg warn">{baseFrom} 내용을 불러왔습니다. 이번 회의에서 달라진 부분만 AI가 고칩니다.</div>}
           <div className="actions">
             <button className="btn primary" onClick={draft} disabled={!!busy}>AI 초안 만들기</button>
-            <button className="btn" onClick={fillScores} disabled={!!busy}>체크 결과로 점수 채우기</button>
+            <button className="btn" onClick={fillScores} disabled={!!busy}>점수 자동 채우기</button>
             <button className="btn" onClick={save} disabled={!!busy}>저장</button>
             <button className="btn" onClick={download} disabled={!!busy}>엑셀 내려받기</button>
             <button className="btn" onClick={bundle} disabled={!!busy}>보고서 재료 내려받기</button>
@@ -446,6 +506,7 @@ export default function Checklist({ sb, active, preset }) {
                     {it.r === 4 && <div className="conf" style={{ marginTop: 0 }}>작성 제외 항목 (사전의무교육)</div>}
                     {flags[it.r]?.nb && <div className="msg err" style={{ marginTop: 0, padding: "4px 8px" }}>근거 없음 — 회의록에 내용이 없어 평가기준으로 채웠습니다. 확인 후 수정하세요.</div>}
                     {flags[it.r]?.over && <div className="msg warn" style={{ marginTop: 0, padding: "4px 8px" }}>분량 초과 — 엑셀 칸을 넘칠 수 있습니다.</div>}
+                    {!!flags[it.r]?.adj && <div className="conf" style={{ marginTop: 0 }}>점수 범위 맞춤으로 {flags[it.r].adj > 0 ? "+" : ""}{flags[it.r].adj}점 조정됨</div>}
                     {INHERIT[stage] && changedRows().includes(it.r) && <div className="conf" style={{ marginTop: 0 }}>앞 단계에서 변경됨 (엑셀 노란 바탕)</div>}
                     <div className="de" style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{it.crit}</div>
                     <div className="row" style={{ alignItems: "flex-end" }}>
