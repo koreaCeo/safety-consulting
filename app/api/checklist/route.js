@@ -21,14 +21,20 @@ async function rowHeights() {
   for (const m of xml.matchAll(/<row r="(\d+)"[^>]*?ht="([\d.]+)"/g)) _heights[Number(m[1])] = Number(m[2]);
   return _heights;
 }
+// 엑셀 칸에서 실제로 차지하는 줄 수로 판정 (한 줄 약 40자, 높이 150 = 4줄)
+const CPL = 40;
+function vis(s) { let w = 0; for (const ch of s) w += ch.charCodeAt(0) > 0x2E80 ? 1 : 0.55; return w; }
 function budgetOf(h) {
   const ht = h || 150;
-  return { lines: ht >= 230 ? 3 : 2, chars: Math.max(80, Math.round(90 * ht / 150)), perLine: 45 };
+  return { vlines: Math.max(3, Math.floor(ht / 150 * 4)), paras: ht >= 230 ? 4 : 3 };
+}
+function visualLines(text) {
+  return (text || "").split("\n").filter(x => x.trim()).reduce((n, l) => n + Math.max(1, Math.ceil(vis(l) / CPL)), 0);
 }
 function overBudget(text, bud) {
   const t = (text || "").trim(); if (!t) return false;
-  const ls = t.split("\n").filter(x => x.trim());
-  return ls.length > bud.lines || t.length > bud.chars || ls.some(l => l.length > bud.perLine + 5);
+  const paras = t.split("\n").filter(x => x.trim()).length;
+  return visualLines(t) > bud.vlines || paras > bud.paras;
 }
 
 const STYLE_RULES = `[문체 규칙]
@@ -59,7 +65,7 @@ function draftPrompt({ company, stage, transcript, prev, answers, checks }, item
     const bud = budgetOf(heights[it.r]);
     const facts = checks ? checkFacts(it.r, checks) : [];
     const adv = CHECK_ADVICE[String(it.r)];
-    return `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 장소: ${it.where} | 분량: 칸당 최대 ${bud.lines}줄·${bud.chars}자, 줄당 ${bud.perLine}자`
+    return `${it.r} | ${it.ind} | ${it.crit.replace(/\n/g, " ")} | 장소: ${it.where} | 분량: 칸 안에서 최대 ${bud.vlines}줄(한 줄 약 ${CPL}자, 문단 ${bud.paras}개 이내)`
       + (facts.length ? `\n   [현장 체크] ${facts.join(" / ")}` : "")
       + (adv ? `\n   [권고 예시] ${adv}` : "");
   }).join("\n");
@@ -67,14 +73,18 @@ function draftPrompt({ company, stage, transcript, prev, answers, checks }, item
   const rowSet = new Set(items.map(it => String(it.r)));
   const prevRows = Object.entries(prev || {}).filter(([r, v]) => rowSet.has(String(r)) && v && (v.i || v.j));
   const prevText = prevRows.map(([r, v]) => `${r}\n현황: ${v.i || "-"}\n개선대책: ${v.j || "-"}`).join("\n\n");
-  const ans = (Array.isArray(answers) ? answers : []).filter(a => a && a.a && String(a.a).trim() && (!a.r || rowSet.has(String(a.r))));
+  const all = (Array.isArray(answers) ? answers : []).filter(a => a && (!a.r || rowSet.has(String(a.r))));
+  const EX = "__EXCLUDE__";
+  const exq = all.filter(a => a.a === EX && !a.r).map(a => `"${a.quote}"`);
+  const exr = all.filter(a => a.a === EX && a.r).map(a => `${a.r}행 — ${a.q}`);
+  const ans = all.filter(a => a.a && a.a !== EX && String(a.a).trim());
   const ansText = ans.map(a => a.r ? `${a.r}행 | 질문: ${a.q} | 지도사 답: ${a.a}` : `회의록 정정 | 원문: "${a.quote}" | 지도사 답: ${a.a}`).join("\n");
 
   return `당신은 건설업 안전보건관리체계 구축 컨설팅을 수행하는 산업안전지도사의 보조자입니다.
 업체: ${company || ""} / 단계: ${STAGE[stage] || stage}
 
 아래 회의록과 자료를 근거로, 아래 "세부기준" 각 행의 [현황 및 문제점](i)과 [개선대책](j)을 씁니다. 평가점수는 쓰지 않습니다.
-${ansText ? `\n[지도사 확인 답변 — 회의록보다 우선하는 근거]\n${ansText}\n` : ""}
+${ansText ? `\n[지도사 확인 답변 — 회의록보다 우선하는 근거]\n${ansText}\n` : ""}${exq.length ? `\n[잘못 녹음된 회의록 원문 — 아래 내용은 절대 사용하지 말 것]\n${exq.join("\n")}\n` : ""}${exr.length ? `\n[지도사가 제외한 질문 — 이 질문의 내용은 반영하지 말 것]\n${exr.join("\n")}\n` : ""}
 ${STYLE_RULES}
 
 [근거 우선순위]
@@ -106,7 +116,7 @@ JSON 하나로만 답한다. 형식:
 function shrinkPrompt(rows, heights) {
   const list = rows.map(x => {
     const bud = budgetOf(heights[x.r]);
-    return `${x.r} | 분량: 최대 ${bud.lines}줄·${bud.chars}자, 줄당 ${bud.perLine}자\n현황: ${x.i}\n개선대책: ${x.j}`;
+    return `${x.r} | 분량: 칸 안에서 최대 ${bud.vlines}줄(한 줄 약 ${CPL}자, 문단 ${bud.paras}개 이내)\n현황: ${x.i}\n개선대책: ${x.j}`;
   }).join("\n\n");
   return `다음 평가지표 문장들이 엑셀 칸에 들어가지 않습니다. 의미와 "- 본사 : / - 현장 :" 형식, 어조는 그대로 두고 각 행의 분량 제한 안으로 줄여주세요. 덜 중요한 수식어부터 줄이고, 줄 수가 넘치면 비슷한 줄을 합칩니다.
 
@@ -239,6 +249,31 @@ export async function POST(req) {
         "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
       },
     });
+  }
+
+  if (body.action === "score") {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return Response.json({ error: "ANTHROPIC_API_KEY 가 설정되지 않았습니다." }, { status: 500 });
+    const rows = body.rows || {};
+    const want = new Set((body.only || []).map(Number));
+    const items = WORK.filter(it => !isNaN(Number(it.max)) && want.has(it.r) && rows[it.r] && ((rows[it.r].i || "").trim() || (rows[it.r].j || "").trim()));
+    if (!items.length) return Response.json({ scores: {} });
+    const list = items.map(it => `${it.r} | ${it.ind} | 기준: ${it.crit.replace(/\n/g, " ")} | 배점 ${it.max}\n   현황: ${(rows[it.r].i || "-").replace(/\n/g, " / ")}`).join("\n");
+    const prompt = `건설업 안전보건관리체계 평가지표의 각 세부기준에 대해, 지도사가 작성한 [현황]만을 근거로 평가점수를 매깁니다.
+규칙: 기준에 배점 항목이 나뉘어 있으면(예: 문서화_1점, 실행계획_1점) 현황에서 충족된 항목의 점수만 더합니다. 현황이 "운영 중/작성 완료"면 충족, "미수립/미실시/미흡"이면 미충족, "~중이나 ~미흡"이면 해당 항목만 미충족으로 봅니다. 0 이상 배점 이하의 정수.
+
+${list}
+
+JSON 하나로만 답합니다. 형식: {"scores":[{"r":5,"g":1}]}`;
+    const res = await askClaude(key, prompt, 3000);
+    if (res.error) return Response.json(res, { status: 502 });
+    const out = {};
+    for (const x of (Array.isArray(res.json?.scores) ? res.json.scores : [])) {
+      const it = items.find(i => i.r === Number(x.r)); if (!it) continue;
+      const g = Math.max(0, Math.min(Number(it.max), Math.round(Number(x.g))));
+      if (!isNaN(g)) out[it.r] = g;
+    }
+    return Response.json({ scores: out });
   }
 
   if (body.action === "review") {
