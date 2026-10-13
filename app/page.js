@@ -7,7 +7,7 @@ import Checklist from "./Checklist";
 import Checks from "./Checks";
 import Progress from "./Progress";
 
-const APP_VERSION = "v23";
+const APP_VERSION = "v24";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
