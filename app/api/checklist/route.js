@@ -179,6 +179,26 @@ JSON 하나로만 답한다. ok는 행번호만, unclear·missing은 질문과 �
 {"ok":[5,6],"unclear":[{"r":7,"q":"…"}],"missing":[{"r":9,"q":"…"}],"issues":[{"quote":"회의록 원문 인용","guess":"이렇게 이해함","q":"맞나요? 등 확인 질문"}]}`;
 }
 
+// 잘린 답에서도 완성된 {"r":..} 항목만 골라 살리기
+function salvageRows(text) {
+  const out = [];
+  let i = text.indexOf('{"r"');
+  while (i >= 0) {
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let k = i; k < text.length; k++) {
+      const c = text[k];
+      if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) { end = k; break; } }
+    }
+    if (end < 0) break;
+    try { const o = JSON.parse(text.slice(i, end + 1)); if (o && o.r != null) out.push(o); } catch {}
+    i = text.indexOf('{"r"', end + 1);
+  }
+  return out;
+}
+
 async function askClaude(key, prompt, maxTokens) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -187,9 +207,14 @@ async function askClaude(key, prompt, maxTokens) {
   });
   if (!r.ok) return { error: "AI 서버 오류", detail: (await r.text()).slice(0, 300) };
   const d = await r.json();
-  const text = (d.content || []).filter(c => c.type === "text").map(c => c.text).join("\n");
+  const text = (d.content || []).filter(c => c.type === "text").map(c => c.text).join("\n").replace(/```json|```/g, "");
+  const truncated = d.stop_reason === "max_tokens";
   const m = text.match(/\{[\s\S]*\}/);
-  try { return { json: JSON.parse(m[0]) }; } catch { return { error: "AI 결과를 해석하지 못했습니다." }; }
+  if (m) { try { return { json: JSON.parse(m[0]), truncated }; } catch {} }
+  // 전체 해석이 안 되면 완성된 항목만 살림
+  const rows = salvageRows(text);
+  if (rows.length) return { json: { rows }, partial: true, truncated };
+  return { error: truncated ? "AI 답변이 너무 길어 잘렸습니다. 다시 시도해 주세요." : "AI 결과를 해석하지 못했습니다." };
 }
 
 function esc(s) {
@@ -320,15 +345,25 @@ JSON 하나로만 답합니다. 형식: {"scores":[{"r":5,"g":1}]}`;
     const heights = await rowHeights();
     // 뒤쪽 누락 방지: A~C / D~F 두 번에 나눠 작성
     const groups = [WORK.filter(it => /^[ABC]/.test(it.ind)), WORK.filter(it => /^[DEF]/.test(it.ind))];
-    const results = await Promise.all(groups.map(g => askClaude(key, draftPrompt(body, g, heights), 12000)));
-    const err = results.find(x => x.error);
-    if (err) return Response.json(err, { status: 502 });
+    const results = await Promise.all(groups.map(g => askClaude(key, draftPrompt(body, g, heights), 20000)));
     const valid = new Set(WORK.map(it => it.r));
     const rows = {};
-    for (const res of results) for (const x of (Array.isArray(res.json?.rows) ? res.json.rows : [])) {
+    const take = res => { for (const x of (Array.isArray(res?.json?.rows) ? res.json.rows : [])) {
       const rr = Number(x.r);
-      if (!valid.has(rr)) continue;
+      if (!valid.has(rr) || !(String(x.i || "").trim() || String(x.j || "").trim())) continue;
       rows[rr] = { i: String(x.i || "").trim(), j: String(x.j || "").trim(), nb: !!x.nb };
+    } };
+    results.forEach(take);
+    // 빠진 항목만 한 번 더 요청 (잘렸거나 한쪽이 실패했을 때만)
+    let missing = WORK.filter(it => !rows[it.r]);
+    if (missing.length) {
+      const retry = await askClaude(key, draftPrompt(body, missing, heights), 20000);
+      take(retry);
+      missing = WORK.filter(it => !rows[it.r]);
+    }
+    if (!Object.keys(rows).length) {
+      const err = results.find(x => x.error) || { error: "AI 결과를 해석하지 못했습니다." };
+      return Response.json(err, { status: 502 });
     }
     // 분량 초과 칸만 한 번 더 줄이기
     const over = Object.entries(rows).filter(([r, v]) => overBudget(v.i, budgetOf(heights[r])) || overBudget(v.j, budgetOf(heights[r])))
@@ -344,7 +379,7 @@ JSON 하나로만 답합니다. 형식: {"scores":[{"r":5,"g":1}]}`;
       const bud = budgetOf(heights[r]);
       v.over = overBudget(v.i, bud) || overBudget(v.j, bud);
     }
-    return Response.json({ rows, shrunk: over.length });
+    return Response.json({ rows, shrunk: over.length, missing: missing.map(it => it.r) });
   }
 
   return Response.json({ error: "알 수 없는 요청" }, { status: 400 });
