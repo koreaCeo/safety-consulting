@@ -57,7 +57,10 @@ export default function Progress({ sb, companyId, onGo }) {
   const visitOf = p => d.vs.find(v => v.stage === p.stage && v.round_no === p.round);
   const vInfo = PLAN.map(p => {
     const v = visitOf(p);
-    if (!v) return { ...p, v: null, status: "none" };
+    if (!v) {
+      const rules = d.rules.filter(r => r.stage === p.stage && (r.location_type === p.loc || r.location_type === "ANY"));
+      return { ...p, v: null, status: "none", items: [{ label: "회의록", ok: false }, ...rules.map(r => ({ label: `${(r.label || r.category).replace(/ 사진$/, "")} 0/${r.required_count}`, ok: false }))] };
+    }
     const loc = v.location_type;
     const transcript = d.recs.some(r => r.visit_id === v.id && r.transcript_status === "done");
     const rules = d.rules.filter(r => r.stage === v.stage && (r.location_type === loc || r.location_type === "ANY"));
@@ -67,7 +70,11 @@ export default function Progress({ sb, companyId, onGo }) {
     const findings = d.photos.filter(x => x.visit_id === v.id && x.category === "finding");
     const findingsDone = findings.filter(x => (x.risk_text || "").trim()).length;
     const done = transcript && gaps.length === 0;
-    return { ...p, v, loc, transcript, gaps, findings: findings.length, findingsDone, status: done ? "done" : "doing" };
+    const items = [{ label: "회의록", ok: transcript },
+      ...rules.map(r => { const got = d.photos.filter(x => x.visit_id === v.id && x.category === r.category).length;
+        return { label: `${(r.label || r.category).replace(/ 사진$/, "")} ${Math.min(got, r.required_count)}/${r.required_count}`, ok: got >= r.required_count }; }),
+      ...(findings.length ? [{ label: `지적사항 작성 ${findingsDone}/${findings.length}`, ok: findingsDone >= findings.length }] : [])];
+    return { ...p, v, loc, transcript, gaps, findings: findings.length, findingsDone, items, status: done ? "done" : "doing" };
   });
   const DIAG_SKIPPED = !visitOf(PLAN[0]) && d.vs.some(v => v.stage !== "DIAG");
 
@@ -100,12 +107,23 @@ export default function Progress({ sb, companyId, onGo }) {
     if (NEEDS_GENERAL[s.st] && !s.pg.general) { next = `${s.label} 일반현황 미수령`; break; }
   }
 
-  const visitColor = x => x.status === "done" ? C.ok : x.status === "doing" ? C.warn : C.none;
-  const Flag = ({ s, k, label }) => (
-    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: "4px 14px 0 0", fontSize: 14, cursor: "pointer" }}>
-      <input type="checkbox" checked={!!s.pg[k]} onChange={() => toggle(s.st, k)} style={{ width: 16, height: 16 }} /> {label}
-    </label>
+  const Chip = ({ ok, children, onClick }) => (
+    <span onClick={onClick}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 9px", margin: "4px 6px 0 0", borderRadius: 14, fontSize: 13,
+        cursor: onClick ? "pointer" : "default", border: "1px solid " + (ok ? "#9fd4c1" : "#efb8b8"),
+        background: ok ? "#e7f5ef" : "#fdeeee", color: ok ? C.ok : C.no, fontWeight: 500 }}>
+      {ok ? "✓" : "✗"} {children}
+    </span>
   );
+  const Bar = ({ n, t }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+      <div style={{ flex: 1, height: 8, background: "#eceae4", borderRadius: 4, overflow: "hidden" }}>
+        <div style={{ width: `${t ? Math.round(n / t * 100) : 0}%`, height: "100%", background: n >= t ? C.ok : C.warn }} />
+      </div>
+      <span className="conf" style={{ marginTop: 0, minWidth: 64, textAlign: "right" }}>{n}/{t} 완료</span>
+    </div>
+  );
+  const mail = d.progress.mail || {};
 
   return (
     <div>
@@ -113,56 +131,52 @@ export default function Progress({ sb, companyId, onGo }) {
         ▶ {next}
       </div>
 
-      {sInfo.map(s => (
-        <div key={s.st} className="item" style={{ marginTop: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <Dot c={s.st === "DIAG" && DIAG_SKIPPED ? C.none : s.done ? C.ok : s.vis.some(x => x.status !== "none") ? C.warn : C.none} />
-            <div className="nm" style={{ flex: 1, margin: 0 }}>{s.label}</div>
-            {s.st === "DIAG" && DIAG_SKIPPED && <span className="conf" style={{ marginTop: 0 }}>기록 없음</span>}
-            {s.done && <span className="conf" style={{ marginTop: 0, color: C.ok }}>단계 완료</span>}
-            {s.st !== "DIAG" && <button className="btn sm" onClick={() => onGo("check", { companyId, stage: s.st })}>평가지표</button>}
+      {sInfo.map(s => {
+        const skipped = s.st === "DIAG" && DIAG_SKIPPED;
+        const flags = s.st === "DIAG" ? [["report", "수준진단 보고"], ["general", "일반현황 수령"]]
+          : [["eval", "평가지표 완료"], ["report", "결과보고서 제출"], ...(NEEDS_GENERAL[s.st] ? [["general", "일반현황 수령"]] : [])];
+        const all = [...s.vis.flatMap(x => x.items), ...flags.map(([k]) => ({ ok: !!s.pg[k] }))];
+        const doneN = all.filter(x => x.ok).length;
+        const started = s.vis.some(x => x.status !== "none");
+        return (
+          <div key={s.st} className="item" style={{ marginTop: 10, opacity: skipped ? 0.6 : 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div className="nm" style={{ flex: 1, margin: 0, fontWeight: 600 }}>{s.label}</div>
+              <span className="conf" style={{ marginTop: 0, fontWeight: 600, color: skipped ? C.none : s.done ? C.ok : started ? C.warn : C.none }}>
+                {skipped ? "기록 없음" : s.done ? "단계 완료" : started ? "진행 중" : "시작 전"}
+              </span>
+              {s.st !== "DIAG" && <button className="btn sm" onClick={() => onGo("check", { companyId, stage: s.st })}>평가지표</button>}
+            </div>
+            {!skipped && <Bar n={doneN} t={all.length} />}
+
+            {!skipped && s.vis.map(x => (
+              <div key={x.round} style={{ borderTop: "1px solid var(--line)", marginTop: 10, paddingTop: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, fontSize: 14, minWidth: 120 }}>
+                    <b>{x.label}</b>{x.v?.actual_date ? ` · ${x.v.actual_date}` : " · 미방문"}
+                  </div>
+                  <button className="btn sm" onClick={() => onGo("rec", { companyId, stage: x.stage, round: x.round, loc: x.v?.location_type || x.loc })}>녹음</button>
+                  <button className="btn sm" onClick={() => onGo("photo", { companyId, stage: x.stage, round: x.round, loc: x.v?.location_type || x.loc })}>사진</button>
+                  {x.stage !== "DIAG" && <button className="btn sm" onClick={() => onGo("ck", { companyId, stage: x.stage })}>체크</button>}
+                </div>
+                <div>{x.items.map((it, i) => <Chip key={i} ok={it.ok}>{it.label}</Chip>)}</div>
+              </div>
+            ))}
+
+            {!skipped && (
+              <div style={{ borderTop: "1px solid var(--line)", marginTop: 10, paddingTop: 6 }}>
+                {s.st !== "DIAG" && <div className="conf" style={{ marginTop: 0 }}>체크리스트 {s.ckN}/{TOTAL_CHECK} · 평가지표 저장 {s.scN}항목 (참고)</div>}
+                <div>
+                  {flags.map(([k, l]) => <Chip key={k} ok={!!s.pg[k]} onClick={() => toggle(s.st, k)}>{l}</Chip>)}
+                  {NEEDS_GENERAL[s.st] && s.st !== "DIAG" && mail.general_sent_at &&
+                    <Chip ok>일반현황 요청 메일 {new Date(mail.general_sent_at).toLocaleDateString("ko-KR")}</Chip>}
+                </div>
+                <div className="conf">완료·제출·수령 표시는 눌러서 바꿀 수 있습니다.</div>
+              </div>
+            )}
           </div>
-
-          {s.vis.map(x => (
-            <div key={x.round} style={{ borderTop: "1px solid var(--line)", marginTop: 8, paddingTop: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <Dot c={visitColor(x)} />
-                <div style={{ flex: 1, fontSize: 14, minWidth: 120 }}>
-                  <b>{x.label}</b>{x.v?.actual_date ? ` · ${x.v.actual_date}` : ""}
-                  {x.status === "none" && <span className="conf" style={{ marginLeft: 6 }}>미방문</span>}
-                </div>
-                <button className="btn sm" onClick={() => onGo("rec", { companyId, stage: x.stage, round: x.round, loc: x.v?.location_type || x.loc })}>녹음</button>
-                <button className="btn sm" onClick={() => onGo("photo", { companyId, stage: x.stage, round: x.round, loc: x.v?.location_type || x.loc })}>사진</button>
-                {x.stage !== "DIAG" && <button className="btn sm" onClick={() => onGo("ck", { companyId, stage: x.stage })}>체크</button>}
-              </div>
-              {x.v && (
-                <div className="conf" style={{ marginTop: 4 }}>
-                  회의록 {x.transcript ? "✓" : "✗"}
-                  {" · "}사진 {x.gaps.length ? x.gaps.map(g => `${g.label} ${g.got}/${g.need}`).join(", ") : "✓"}
-                  {x.findings > 0 ? ` · 지적사항 작성 ${x.findingsDone}/${x.findings}` : ""}
-                </div>
-              )}
-            </div>
-          ))}
-
-          {s.st !== "DIAG" && (
-            <div style={{ borderTop: "1px solid var(--line)", marginTop: 8, paddingTop: 6 }}>
-              <div className="conf" style={{ marginTop: 0 }}>
-                체크리스트 {s.ckN}/{TOTAL_CHECK} · 평가지표 저장 {s.scN}항목 (참고)
-              </div>
-              <Flag s={s} k="eval" label="평가지표 완료" />
-              <Flag s={s} k="report" label="결과보고서 제출" />
-              {NEEDS_GENERAL[s.st] && <Flag s={s} k="general" label="일반현황 수령" />}
-            </div>
-          )}
-          {s.st === "DIAG" && !DIAG_SKIPPED && (
-            <div style={{ marginTop: 6 }}>
-              <Flag s={s} k="report" label="수준진단 보고 완료" />
-              <Flag s={s} k="general" label="일반현황 수령" />
-            </div>
-          )}
-        </div>
-      ))}
+        );
+      })}
       <div className="actions"><button className="btn sm" onClick={load}>새로고침</button></div>
     </div>
   );

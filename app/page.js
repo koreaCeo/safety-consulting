@@ -7,7 +7,7 @@ import Checklist from "./Checklist";
 import Checks from "./Checks";
 import Progress from "./Progress";
 
-const APP_VERSION = "v24";
+const APP_VERSION = "v26";
 let _c = null;
 function sb() {
   if (!_c) _c = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
@@ -107,7 +107,7 @@ function Login() {
 }
 
 function Main({ onLogout }) {
-  const [tab, setTab] = useState("scan");
+  const [tab, setTab] = useState("list");
   const [recInfo, setRecInfo] = useState(null);
   const [presets, setPresets] = useState({});
   // 현황판에서 누른 업체·차수를 해당 탭에 넘기고 이동
@@ -122,7 +122,6 @@ function Main({ onLogout }) {
         <button className="btn sm" onClick={onLogout}>로그아웃</button>
       </div>
       <div className="tabs" style={{ overflowX: "auto", whiteSpace: "nowrap" }}>
-        <button className={"tab" + (tab === "scan" ? " on" : "")} onClick={() => setTab("scan")}>명함 등록</button>
         <button className={"tab" + (tab === "list" ? " on" : "")} onClick={() => setTab("list")}>업체 목록</button>
         <button className={"tab" + (tab === "rec" ? " on" : "")} onClick={() => setTab("rec")}>회의 녹음</button>
         <button className={"tab" + (tab === "photo" ? " on" : "")} onClick={() => setTab("photo")}>현장 사진</button>
@@ -136,7 +135,6 @@ function Main({ onLogout }) {
           ● 녹음 중 {String(Math.floor(recInfo.elapsed / 60)).padStart(2, "0")}:{String(recInfo.elapsed % 60).padStart(2, "0")} — 누르면 회의 녹음 화면으로
         </button>
       )}
-      {tab === "scan" && <Scan />}
       {tab === "list" && <List onGo={go} />}
       {/* 아래 탭들은 닫지 않고 숨기기만 함 (다른 탭에 있어도 녹음·자동저장 유지) */}
       <div style={{ display: tab === "rec" ? "block" : "none" }}><Record sb={sb()} onStatus={setRecInfo} active={tab === "rec"} preset={presets.rec} /></div>
@@ -351,6 +349,7 @@ function List({ onGo }) {
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
+  const [adding, setAdding] = useState(false);
 
   async function load() {
     try {
@@ -380,6 +379,16 @@ function List({ onGo }) {
   if (rows === null) return <div className="card"><div className="empty">목록 불러오는 중… (최대 15초)</div></div>;
   if (err) return <div className="card"><div className="msg err">목록 오류: {err}</div></div>;
 
+  if (adding) return (
+    <>
+      <div className="card" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button className="btn sm" onClick={() => { setAdding(false); load(); }}>‹ 업체 목록</button>
+        <h2 style={{ margin: 0 }}>업체 등록</h2>
+      </div>
+      <Scan />
+    </>
+  );
+
   if (sel) {
     const c = rows.find(x => x.id === sel);
     if (c) return <CompanyDetail c={c} onBack={() => setSel(null)} onChanged={load} onGo={onGo} />;
@@ -392,9 +401,12 @@ function List({ onGo }) {
 
   return (
     <div className="card">
-      <h2>등록된 업체 ({rows.length}) <span className="conf">v14</span></h2>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <h2 style={{ flex: 1, margin: 0 }}>등록된 업체 ({rows.length})</h2>
+        <button className="btn primary sm" onClick={() => setAdding(true)}>+ 업체 등록</button>
+      </div>
       <input placeholder="업체명, 담당자 이름, 전화번호, 메일로 검색" value={q} onChange={e => setQ(e.target.value)} />
-      {!rows.length && <div className="empty">아직 등록된 업체가 없습니다.</div>}
+      {!rows.length && <div className="empty">아직 등록된 업체가 없습니다. "+ 업체 등록"으로 명함을 찍어 등록하세요.</div>}
       {rows.length > 0 && !shown.length && <div className="empty">검색 결과가 없습니다.</div>}
       <div style={{ marginTop: 12 }}>
         {shown.map(c => (
@@ -458,6 +470,15 @@ function CompanyDetail({ c, onBack, onChanged, onGo }) {
     setBusy(false);
     if (error) { setMsg({ t: "err", s: "삭제 실패: " + error.message }); return; }
     await onChanged();
+  }
+
+  async function removeCompany() {
+    if (!confirm(`${c.name} 업체를 삭제할까요?\n업체 목록에서 사라지며, 회의록·사진 등 기록은 보관됩니다.`)) return;
+    setBusy(true);
+    const { error } = await sb().from("companies").update({ deleted_at: new Date().toISOString() }).eq("id", c.id);
+    setBusy(false);
+    if (error) { setMsg({ t: "err", s: "삭제 실패: " + error.message }); return; }
+    onBack(); await onChanged();
   }
 
   async function savePrep() {
@@ -535,6 +556,111 @@ function CompanyDetail({ c, onBack, onChanged, onGo }) {
           </div>
         </>)}
       </div>
+      <MailGeneral c={c} />
+
+      <div style={{ marginTop: 24, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+        <button className="btn sm danger" onClick={removeCompany} disabled={busy}>업체 삭제</button>
+        <span className="conf" style={{ marginLeft: 8 }}>잘못 등록한 업체를 목록에서 지웁니다.</span>
+      </div>
+      {msg && <div className={"msg " + msg.t}>{msg.s}</div>}
+    </div>
+  );
+}
+
+/* ---------- 일반현황 요청 메일 (Gmail 발송, 양식 첨부) ---------- */
+const TPL_PATH = uid => `${uid}/templates/general.hwpx`;
+function MailGeneral({ c }) {
+  const people = c.contacts.filter(p => p.email);
+  const [open, setOpen] = useState(null);
+  const [subj, setSubj] = useState("");
+  const [body, setBody] = useState("");
+  const [tpl, setTpl] = useState(null);       // 등록된 양식 여부
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState(null);
+  const fileRef = useRef(null);
+
+  async function checkTpl() {
+    const { data: u } = await sb().auth.getUser();
+    const { data } = await sb().storage.from("photos").list(`${u.user.id}/templates`);
+    setTpl(!!(data || []).find(f => f.name === "general.hwpx"));
+  }
+  useEffect(() => { checkTpl(); }, []);
+
+  function start(p) {
+    setOpen(p.id); setMsg(null);
+    setSubj(`[안전상생] ${c.name} 컨설팅 결과보고서 일반현황 작성 요청`);
+    setBody(`${p.name}${p.title ? " " + p.title : ""}님, 업무에 노고가 많으십니다.\n\n안전상생지원 프로그램 컨설팅 결과보고서 작성을 위해 일반현황 양식을 첨부와 같이 송부드립니다.\n양식 내 노란색 표시 부분만 작성하여 회신해 주시면 됩니다.\n\n신은철 드림`);
+  }
+
+  async function uploadTpl(e) {
+    const f = e.target.files?.[0]; if (!f) return;
+    setBusy("tpl");
+    const { data: u } = await sb().auth.getUser();
+    const { error } = await sb().storage.from("photos").upload(TPL_PATH(u.user.id), f, { upsert: true, contentType: "application/octet-stream" });
+    setBusy("");
+    if (error) { setMsg({ t: "err", s: "양식 등록 실패: " + error.message }); return; }
+    setMsg({ t: "info", s: "일반현황 양식을 등록했습니다. 앞으로 모든 업체 메일에 이 파일이 첨부됩니다." });
+    checkTpl();
+  }
+
+  async function send(p) {
+    if (!tpl) { setMsg({ t: "err", s: "먼저 일반현황 양식 파일을 등록하세요." }); return; }
+    setBusy("send"); setMsg(null);
+    try {
+      const { data: u } = await sb().auth.getUser();
+      const { data: blob, error } = await sb().storage.from("photos").download(TPL_PATH(u.user.id));
+      if (error) throw error;
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      const { data: ss } = await sb().auth.getSession();
+      const r = await fetch("/api/mail", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + (ss.session?.access_token || "") },
+        body: JSON.stringify({ to: p.email, subject: subj, text: body,
+          attach: { name: `건설업 안전상생지원 프로그램 컨설팅 결과보고서 일반현황(${c.name}).hwpx`, base64: btoa(bin) } }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "발송 실패");
+      // 발송 기록 (현황판 표시용)
+      const { data: co } = await sb().from("companies").select("progress").eq("id", c.id).single();
+      const prog = co?.progress || {};
+      prog.mail = { ...(prog.mail || {}), general_sent_at: new Date().toISOString(), general_to: p.email };
+      await sb().from("companies").update({ progress: prog }).eq("id", c.id);
+      setMsg({ t: "info", s: `${p.name}님(${p.email})께 일반현황 요청 메일을 보냈습니다.` });
+      setOpen(null);
+    } catch (e) {
+      setMsg({ t: "err", s: e.message || "발송 실패" });
+    } finally { setBusy(""); }
+  }
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div className="nm" style={{ fontWeight: 600 }}>일반현황 요청 메일</div>
+      <div className="conf">
+        첨부 양식: {tpl === null ? "확인 중…" : tpl ? "등록됨 ✓" : "미등록"}{" "}
+        <button className="btn sm" onClick={() => fileRef.current?.click()} disabled={busy === "tpl"}>{tpl ? "양식 바꾸기" : "양식 등록"}</button>
+        <input ref={fileRef} type="file" accept=".hwpx,.hwp,.docx,.xlsx,.pdf" className="hidden" onChange={uploadTpl} />
+      </div>
+      {!people.length && <div className="conf">메일 주소가 등록된 담당자가 없습니다.</div>}
+      {people.map(p => (
+        <div key={p.id} className="item" style={{ marginTop: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ flex: 1 }}>{p.name}{p.title ? ` · ${p.title}` : ""} <span className="conf">{p.email}</span></div>
+            {open !== p.id && <button className="btn sm" onClick={() => start(p)}>메일 작성</button>}
+          </div>
+          {open === p.id && (<>
+            <label>제목</label>
+            <input value={subj} onChange={e => setSubj(e.target.value)} />
+            <label>내용</label>
+            <textarea value={body} onChange={e => setBody(e.target.value)} style={{ minHeight: 160 }} />
+            <div className="conf">첨부: 일반현황 양식({c.name})</div>
+            <div className="actions" style={{ marginTop: 8 }}>
+              <button className="btn primary sm" onClick={() => send(p)} disabled={busy === "send"}>{busy === "send" ? "보내는 중…" : "보내기"}</button>
+              <button className="btn sm" onClick={() => setOpen(null)}>취소</button>
+            </div>
+          </>)}
+        </div>
+      ))}
       {msg && <div className={"msg " + msg.t}>{msg.s}</div>}
     </div>
   );

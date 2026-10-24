@@ -96,6 +96,23 @@ export default function Record({ sb, onStatus, active, preset }) {
   }, []);
 
   useEffect(() => { if (skipRoundReset.current) { skipRoundReset.current = false; return; } setRound(ROUNDS[stage][0]); if (stage === "DIAG" || stage === "S") setLoc(stage === "S" ? "HQ" : loc); }, [stage]); // eslint-disable-line
+  // 차수에 따라 본사·현장 자동 (2차·5차 = 현장, 나머지 = 본사)
+  useEffect(() => { if (!recording) setLoc(round === 2 || round === 5 ? "SITE" : "HQ"); }, [round]); // eslint-disable-line
+  // 업체를 고르면 진행 중이거나 다음에 할 회차 자동 선택
+  async function chooseCompany(id) {
+    setCompanyId(id); setVisit(null);
+    if (!id) return;
+    const { data: vs } = await sb.from("visits").select("id, round_no").eq("company_id", id).is("deleted_at", null);
+    let r = 1;
+    if (vs && vs.length) {
+      const last = vs.reduce((a, b) => (b.round_no > a.round_no ? b : a));
+      const { data: rc } = await sb.from("recordings").select("id").eq("visit_id", last.id).eq("transcript_status", "done").limit(1);
+      r = rc && rc.length && last.round_no < 5 ? last.round_no + 1 : last.round_no;
+    }
+    const st = r === 0 ? "DIAG" : r <= 2 ? "I" : r === 3 ? "S" : "P";
+    skipRoundReset.current = st !== stage;
+    setStage(st); setRound(r);
+  }
 
   /* ---------- 변환 끝난 녹음 원본 30일 후 자동 삭제 (스크립트는 유지) ---------- */
   async function cleanupOldAudio() {
@@ -316,7 +333,7 @@ export default function Record({ sb, onStatus, active, preset }) {
       <div className="card">
         <h2>1. 방문 회차 선택</h2>
         <label>업체</label>
-        <select value={companyId} onChange={e => { setCompanyId(e.target.value); setVisit(null); }} disabled={recording}>
+        <select value={companyId} onChange={e => chooseCompany(e.target.value)} disabled={recording}>
           <option value="">— 업체 선택 —</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
@@ -332,7 +349,7 @@ export default function Record({ sb, onStatus, active, preset }) {
             </select>
           </div>
           <div><label>장소</label>
-            <select value={loc} onChange={e => { setLoc(e.target.value); setVisit(null); }} disabled={recording || stage === "S"}>
+            <select value={loc} onChange={e => { setLoc(e.target.value); setVisit(null); }} disabled title="차수에 따라 자동">
               <option value="HQ">본사</option>
               <option value="SITE">현장</option>
             </select>
@@ -351,7 +368,7 @@ export default function Record({ sb, onStatus, active, preset }) {
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음 <span className="conf">v21</span></h2>
+          <h2>2. 회의 녹음 <span className="conf">v26</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording

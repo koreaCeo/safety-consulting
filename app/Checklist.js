@@ -199,7 +199,8 @@ export default function Checklist({ sb, active, preset }) {
       setChanged(Object.fromEntries(Object.keys(d.rows || {}).map(k => [k, true])));
       const nb = Object.values(d.rows || {}).filter(v => v.nb).length;
       const ov = Object.values(d.rows || {}).filter(v => v.over).length;
-      setMsg({ t: "info", s: `${n}개 기준에 초안을 넣었습니다.${nb ? ` 근거 없음 ${nb}개(빨간 표시)는 꼭 확인하세요.` : ""}${ov ? ` 분량 초과 ${ov}개(주황 표시)는 줄여주세요.` : ""}` });
+      const ms = (d.missing || []).length;
+      setMsg({ t: ms ? "err" : "info", s: `${n}개 기준에 초안을 넣었습니다.${nb ? ` 근거 없음 ${nb}개(빨간 표시)는 꼭 확인하세요.` : ""}${ov ? ` 분량 초과 ${ov}개(주황 표시)는 줄여주세요.` : ""}${ms ? ` 작성되지 않은 기준 ${ms}개(${d.missing.join(", ")}행)는 초안 만들기를 한 번 더 누르거나 직접 입력하세요.` : ""}` });
     } catch (e) {
       setMsg({ t: "err", s: e.message || "초안 실패" });
     } finally { setBusy(""); }
