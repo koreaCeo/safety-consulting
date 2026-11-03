@@ -39,6 +39,33 @@ async function idbDel(key) {
   });
 }
 
+/* ---------- 녹음 파일 → 10분 조각 WAV (변환 용량 25MB 제한 대비) ---------- */
+const RATE = 16000, PIECE_SEC = 600;
+async function splitAudio(file) {
+  const buf = await file.arrayBuffer();
+  const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ctx = new AC(1, RATE, RATE);
+  const ab = await ctx.decodeAudioData(buf);          // 16kHz로 풀어서 읽음
+  const chs = Array.from({ length: ab.numberOfChannels }, (_, i) => ab.getChannelData(i));
+  const total = ab.length, step = PIECE_SEC * ab.sampleRate, out = [];
+  for (let st = 0; st < total; st += step) {
+    const n = Math.min(step, total - st);
+    const v = new DataView(new ArrayBuffer(44 + n * 2));
+    const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, ab.sampleRate, true); v.setUint32(28, ab.sampleRate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) {
+      let x = 0; for (const c of chs) x += c[st + i]; x /= chs.length;
+      x = Math.max(-1, Math.min(1, x));
+      v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    }
+    out.push({ blob: new Blob([v], { type: "audio/wav" }), sec: Math.round(n / ab.sampleRate) });
+  }
+  return out;
+}
+
 function fmt(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
   return (h ? h + ":" : "") + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
@@ -66,7 +93,7 @@ export default function Record({ sb, onStatus, active, preset }) {
   const [busy, setBusy] = useState("");
   const [upMsg, setUpMsg] = useState(null);
   const [pasteText, setPasteText] = useState("");
-  const textIn = useRef(null);
+  const textIn = useRef(null), audioIn = useRef(null);
 
   const streamRef = useRef(null), recRef = useRef(null), segTimer = useRef(null), tick = useRef(null);
   const seqRef = useRef(1), wakeRef = useRef(null), stopping = useRef(false), visitRef = useRef(null);
@@ -292,6 +319,42 @@ export default function Record({ sb, onStatus, active, preset }) {
     await loadRows(visit.id);
   }
 
+  async function onAudioFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !visit) return;
+    if (!navigator.onLine) { setUpMsg({ t: "err", s: "인터넷이 연결된 뒤에 올려주세요." }); return; }
+    setBusy("audio"); setUpMsg({ t: "info", s: "녹음 파일을 읽는 중입니다… (1시간짜리는 1분 정도)" });
+    try {
+      let pieces;
+      try { pieces = await splitAudio(file); }
+      catch { throw new Error("이 녹음 파일 형식을 읽지 못했습니다. m4a·mp3·wav 파일로 올리거나, 회의록 텍스트를 붙여넣어 주세요."); }
+      const { data: u } = await sb.auth.getUser();
+      const made = [];
+      for (let k = 0; k < pieces.length; k++) {
+        setUpMsg({ t: "info", s: `올리는 중… (${k + 1}/${pieces.length}조각, 조각당 10분)` });
+        const seq = seqRef.current++;
+        const path = `${u.user.id}/${visit.id}/${seq}.wav`;
+        const up = await sb.storage.from("recordings").upload(path, pieces[k].blob, { upsert: true, contentType: "audio/wav" });
+        if (up.error) throw up.error;
+        const { data: row, error } = await sb.from("recordings").upsert({
+          visit_id: visit.id, seq, storage_path: path, local_path: `${file.name} (${k + 1}/${pieces.length})`,
+          duration_sec: pieces[k].sec, file_size: pieces[k].blob.size, upload_status: "done", transcript_status: "pending",
+        }, { onConflict: "visit_id,seq" }).select("*").single();
+        if (error) throw error;
+        made.push(row);
+      }
+      await loadRows(visit.id);
+      for (let k = 0; k < made.length; k++) {
+        setUpMsg({ t: "info", s: `텍스트로 바꾸는 중… (${k + 1}/${made.length}조각, 조각당 1분 안팎)` });
+        await transcribe(made[k]);
+      }
+      setUpMsg({ t: "info", s: `녹음 파일 ${pieces.length}조각을 올리고 텍스트로 바꿨습니다. 아래 목록에서 '변환 실패'가 있으면 '다시 변환'을 누르세요.` });
+    } catch (err) {
+      setUpMsg({ t: "err", s: "녹음 파일 올리기 실패: " + (err.message || "") });
+    } finally { setBusy(""); }
+  }
+
   async function onTextFile(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -368,7 +431,7 @@ export default function Record({ sb, onStatus, active, preset }) {
 
       {visit && (
         <div className="card">
-          <h2>2. 회의 녹음 <span className="conf">v26</span></h2>
+          <h2>2. 회의 녹음 <span className="conf">v27</span></h2>
           <div style={{ fontSize: 34, fontWeight: 500, textAlign: "center", margin: "8px 0" }}>{fmt(elapsed)}</div>
           <div className="actions" style={{ justifyContent: "center" }}>
             {!recording
@@ -399,12 +462,15 @@ export default function Record({ sb, onStatus, active, preset }) {
 
       {visit && !recording && (
         <div className="card">
-          <h2>회의 자료 올리기</h2>
-          <div className="conf">이미 만든 회의록 텍스트를 이 회차에 추가합니다. (변환 비용 없음)</div>
+          <h2>회의 자료 올리기 <span className="conf">나중에 올리기</span></h2>
+          <div className="conf">인터넷이 안 돼서 현장에서 못 한 회차는 여기서 녹음 파일이나 회의록 텍스트를 올리면 이 회차 기록이 됩니다. 방문일은 위 '회차·방문일 수정'에서 실제 날짜로 고치세요. 사진은 사진 화면의 '앨범에서 고르기'로 올립니다.</div>
+          <input ref={audioIn} type="file" accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg,.aac" className="hidden" onChange={onAudioFile} />
           <input ref={textIn} type="file" accept=".txt,text/plain" className="hidden" onChange={onTextFile} />
           <div className="actions">
-            <button className="btn" disabled={busy === "up"} onClick={() => textIn.current.click()}>텍스트 파일 올리기</button>
+            <button className="btn" disabled={!!busy} onClick={() => audioIn.current.click()}>{busy === "audio" ? "올리는 중…" : "녹음 파일 올리기"}</button>
+            <button className="btn" disabled={!!busy} onClick={() => textIn.current.click()}>텍스트 파일 올리기</button>
           </div>
+          <div className="conf">녹음 파일은 텍스트 변환 비용이 듭니다(현장 녹음과 같음). 클로바노트 등으로 이미 만든 회의록이 있으면 텍스트로 올리세요(비용 없음).</div>
           <label>또는 텍스트 붙여넣기</label>
           <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="회의록 내용을 여기에 붙여넣으세요" />
           <div className="actions" style={{ marginTop: 8 }}>

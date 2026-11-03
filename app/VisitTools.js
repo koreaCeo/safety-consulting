@@ -17,11 +17,12 @@ export default function VisitTools({ sb, visit, onChanged, onDeleted, disabled }
   const [stage, setStage] = useState(visit.stage);
   const [round, setRound] = useState(visit.round_no);
   const [loc, setLoc] = useState(visit.location_type);
+  const [date, setDate] = useState(visit.actual_date || "");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
   async function startEdit() {
-    setStage(visit.stage); setRound(visit.round_no); setLoc(visit.location_type); setMsg(null);
+    setStage(visit.stage); setRound(visit.round_no); setLoc(visit.location_type); setDate(visit.actual_date || ""); setMsg(null);
     setOpen(true);
   }
 
@@ -30,7 +31,7 @@ export default function VisitTools({ sb, visit, onChanged, onDeleted, disabled }
     try {
       const siteId = null;
       const { data, error } = await sb.from("visits")
-        .update({ stage, round_no: round, location_type: loc, site_id: siteId })
+        .update({ stage, round_no: round, location_type: loc, site_id: siteId, actual_date: date || null })
         .eq("id", visit.id).select("*").single();
       if (error) {
         if (error.code === "23505") throw new Error("이 업체에 같은 단계·차수 회차가 이미 있습니다.");
@@ -70,8 +71,8 @@ export default function VisitTools({ sb, visit, onChanged, onDeleted, disabled }
   if (!open) {
     return (
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
-        <span className="conf" style={{ marginTop: 0 }}>열린 회차: <b>{visitLabel(visit)}</b></span>
-        <button className="btn sm" onClick={startEdit} disabled={disabled || busy}>회차 수정</button>
+        <span className="conf" style={{ marginTop: 0 }}>열린 회차: <b>{visitLabel(visit)}</b>{visit.actual_date ? ` · 방문일 ${visit.actual_date}` : ""}</span>
+        <button className="btn sm" onClick={startEdit} disabled={disabled || busy}>회차·방문일 수정</button>
         <button className="btn sm danger" onClick={remove} disabled={disabled || busy}>회차 삭제</button>
         {msg && <div className={"msg " + msg.t} style={{ width: "100%" }}>{msg.s}</div>}
       </div>
@@ -81,6 +82,8 @@ export default function VisitTools({ sb, visit, onChanged, onDeleted, disabled }
   return (
     <div className="item" style={{ marginTop: 10 }}>
       <div className="nm">회차 수정 — 사진·녹음은 그대로 따라옵니다</div>
+      <label>방문일 (나중에 기록을 올릴 때 실제 방문한 날로 고치세요)</label>
+      <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ maxWidth: 200 }} />
       <div className="row">
         <div><label>단계</label>
           <select value={stage} onChange={e => { const s = e.target.value; setStage(s); setRound(ROUNDS[s][0]); if (s === "S") setLoc("HQ"); }}>

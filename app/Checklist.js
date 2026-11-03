@@ -343,14 +343,29 @@ export default function Checklist({ sb, active, preset }) {
       });
       if (r.ok) zip.file(`${co}_${stName}_평가지표.xlsx`, await r.blob());
 
-      zip.file("안내.txt", "\ufeff" + `${co} ${stName} 보고서 재료\n회차 ${visits.length}개 · 사진 ${n}장 · 지적사항 ${findings.length}건\n\n이 압축 파일과 앞 단계 최종본(평가지표·결과보고서), 일반현황을 채팅에 올리고\n"${stName} 평가지표 다듬고 결과보고서 만들어줘"라고 요청하세요.`);
+      // 4) 앞 단계 최종본 (현황판 '최종본 등록'에서 올린 평가지표·결과보고서)
+      const finals = [];
+      const { data: cp } = await sb.from("companies").select("progress").eq("id", companyId).single();
+      for (let k = ORDER.indexOf(stage) - 1; k >= 1; k--) {
+        const st2 = ORDER[k], f = cp?.progress?.[st2]?.final || {};
+        const n2 = STAGES.find(x => x[0] === st2)[1];
+        for (const x of [f.xlsx, f.hwpx]) {
+          if (!x?.path) continue;
+          const { data: b } = await sb.storage.from("photos").download(x.path);
+          if (b) { zip.file(`앞 단계 최종본/${n2}/${x.name}`, b); finals.push(`${n2} ${x.name}`); }
+        }
+      }
+
+      zip.file("안내.txt", "\ufeff" + `${co} ${stName} 보고서 재료\n회차 ${visits.length}개 · 사진 ${n}장 · 지적사항 ${findings.length}건\n` +
+        (finals.length ? `앞 단계 최종본 ${finals.length}개: ${finals.join(", ")}\n\n이 압축 파일과 일반현황을 채팅에 올리고` : `앞 단계 최종본 없음 (현황판 '최종본 등록'에 올리면 다음부터 자동으로 들어갑니다)\n\n이 압축 파일과 앞 단계 최종본(평가지표·결과보고서), 일반현황을 채팅에 올리고`) +
+        `\n"${stName} 평가지표 다듬고 결과보고서 만들어줘"라고 요청하세요.`);
 
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = `${co}_${stName}_보고서재료.zip`; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-      setMsg({ t: "info", s: `내려받았습니다 — 회의록 ${visits.length}회차, 사진 ${n}장, 지적사항 ${findings.length}건, 평가지표 엑셀` });
+      setMsg({ t: "info", s: `내려받았습니다 — 회의록 ${visits.length}회차, 사진 ${n}장, 지적사항 ${findings.length}건, 평가지표 엑셀${finals.length ? `, 앞 단계 최종본 ${finals.length}개` : ""}` });
     } catch (e) {
       setMsg({ t: "err", s: "재료 묶음 실패: " + (e.message || "") });
     } finally { setBusy(""); }
@@ -394,7 +409,7 @@ export default function Checklist({ sb, active, preset }) {
   return (
     <>
       <div className="card">
-        <h2>평가지표 체크리스트 <span className="conf">v23</span></h2>
+        <h2>평가지표 체크리스트 <span className="conf">v27</span></h2>
         <label>업체</label>
         <select value={companyId} onChange={e => { setCompanyId(e.target.value); setLoaded(false); }}>
           <option value="">— 업체 선택 —</option>
@@ -481,7 +496,7 @@ export default function Checklist({ sb, active, preset }) {
         <div className="card">
           <h2>2. 평가지표 초안</h2>
           <div className="conf" style={{ marginTop: 0 }}>{visitInfo}{checks ? ` · 현장 체크 ${Object.keys(checks.s || {}).length}개 반영` : " · 현장 체크 없음"}</div>
-          {baseFrom && <div className="msg warn">{baseFrom} 내용을 불러왔습니다. 이번 회의에서 달라진 부분만 AI가 고칩니다.</div>}
+          {baseFrom && <div className="msg warn">{baseFrom} 내용(최종본을 올렸으면 최종본)을 불러왔습니다. 이번 회의에서 달라진 부분만 AI가 고칩니다.</div>}
           <div className="actions">
             <button className="btn primary" onClick={draft} disabled={!!busy}>AI 초안 만들기</button>
             <button className="btn" onClick={fillScores} disabled={!!busy}>점수 자동 채우기</button>
